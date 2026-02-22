@@ -22,6 +22,8 @@ scripts/venv/
 
 # Runtime and generated assets
 output/
+public/outputs/
+scripts/temp/
 storage/
 logs/
 *.log

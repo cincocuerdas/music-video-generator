@@ -1,0 +1,150 @@
+name: Backend Quality Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'prisma/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'client/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/backend-quality.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'prisma/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'client/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/backend-quality.yml'
+  schedule:
+    - cron: '0 5 * * *'
+
+concurrency:
+  group: backend-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-gate:
+    name: Build + Critical Backend Tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Health ops tests
+        run: npm run test:health-ops
+
+      - name: Pipeline status tests
+        run: npm run test:pipeline-status
+
+      - name: Health alert webhook tests
+        run: npm run test:health-alert-webhook
+
+      - name: Upload backend gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-gate-logs
+          path: |
+            storage/tmp-tests/*
+            storage/logs/*
+          if-no-files-found: ignore
+
+      - name: Cleanup containers
+        if: always()
+        run: docker compose down -v
+
+  nightly-e2e:
+    name: Nightly E2E Pipeline
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm --prefix client ci
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: Start backend + frontend and run E2E
+        env:
+          FRONTEND_BASE_URL: http://127.0.0.1:5173
+          API_BASE_URL: http://127.0.0.1:3000/api/v1
+        run: |
+          set -euo pipefail
+          mkdir -p storage/tmp-tests storage/logs
+          FRONTEND_PID=""
+          cleanup() {
+            if [ -n "${FRONTEND_PID}" ]; then
+              kill "${FRONTEND_PID}" 2>/dev/null || true
+            fi
+            node scripts/dev-tools/backend_runtime.js down || true
+          }
+          trap cleanup EXIT
+          docker compose up -d postgres redis
+          node scripts/dev-tools/backend_runtime.js up --force
+          npm --prefix client run dev -- --host 127.0.0.1 --port 5173 > storage/tmp-tests/frontend-e2e.log 2>&1 &
+          FRONTEND_PID=$!
+          for i in {1..60}; do
+            if curl -sf http://127.0.0.1:5173 >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          npm run test:e2e-pipeline
+
+      - name: Upload nightly E2E logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-e2e-logs
+          path: |
+            storage/tmp-tests/*
+            storage/logs/*
+          if-no-files-found: ignore
+
+      - name: Cleanup containers
+        if: always()
+        run: docker compose down -v

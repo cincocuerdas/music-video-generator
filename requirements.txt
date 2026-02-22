@@ -1,0 +1,15 @@
+# Analysis scripts dependencies
+
+# LLM APIs (install at least one)
+anthropic>=0.39.0
+openai>=1.50.0
+
+# Language detection (optional, for enhanced fallback)
+# lingua-language-detector>=2.0
+
+# NLP processing (optional, for enhanced fallback)
+# spacy>=3.7
+
+# Download spaCy models after install:
+# python -m spacy download es_core_news_lg
+# python -m spacy download en_core_web_trf

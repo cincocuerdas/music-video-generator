@@ -1,0 +1,55 @@
+﻿# Node / TypeScript
+node_modules/
+client/node_modules/
+dist/
+client/dist/
+coverage/
+*.tsbuildinfo
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+scripts/venv/
+
+# Runtime and generated assets
+output/
+storage/
+logs/
+*.log
+/comfy_history.json
+/Gemini_Generated_Image_*.png
+/project_final_*_status.json
+/*.vtt
+/*.webm
+
+# Local tools and binaries
+scripts/ffmpeg.exe
+ComfyUI/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local accidental command-shadow files
+nul
+npm
+npx
+git
+pip
+curl
+findstr
+yt-dlp
+-r
+0.39.0
+1.50.0

@@ -1,0 +1,6 @@
+{
+  "ignore": {
+    "files": ["dist/**", "dist-manifest/**"],
+    "rules": ["react-doctor/require-reduced-motion"]
+  }
+}

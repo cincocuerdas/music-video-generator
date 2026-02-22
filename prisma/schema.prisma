@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid()) @db.Uuid
+  email     String?   @unique
+  name      String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  projects  Project[]
+  sessions  AuthSession[]
+}
+
+model Project {
+  id             String               @id @default(uuid()) @db.Uuid
+  userId         String               @db.Uuid
+  title          String               @db.VarChar(200)
+  status         ProjectStatus        @default(DRAFT)
+  lyrics         String?
+  audioUrl       String?              @db.VarChar(500)
+  audioDuration  Int?
+  visualStyle    String?              @db.VarChar(100)
+  colorPalette   String[]             @default([])
+  aspectRatio    String               @default("16:9")
+  analysisResult Json?
+  videoUrl       String?              @db.VarChar(500)
+  thumbnailUrl   String?              @db.VarChar(500)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  youtubeUrl     String?              @db.VarChar(500)
+  feedbacks      GenerationFeedback[]
+  jobs           Job[]
+  user           User                 @relation(fields: [userId], references: [id])
+}
+
+model GenerationFeedback {
+  id        String   @id @default(uuid()) @db.Uuid
+  projectId String   @db.Uuid
+  score     Int
+  frameTime Float?
+  prompt    String
+  embedding Unsupported("vector")?
+  seed      BigInt?
+  style     String?  @db.VarChar(100)
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([style, score, createdAt(sort: Desc)])
+}
+
+model Job {
+  id           String    @id @default(uuid()) @db.Uuid
+  projectId    String    @db.Uuid
+  type         JobType
+  status       JobStatus @default(PENDING)
+  progress     Int       @default(0)
+  currentStep  String?
+  workerId     String?
+  errorMessage String?
+  inputData    Json?
+  outputData   Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([type, status])
+}
+
+model AuthSession {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  tokenHash   String    @unique @db.VarChar(128)
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  ipAddress   String?   @db.VarChar(64)
+  userAgent   String?   @db.VarChar(500)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([userId, revokedAt])
+}
+
+enum JobType {
+  ANALYZE_LYRICS
+  GENERATE_IMAGES
+  RENDER_VIDEO
+  FINALIZE
+  YOUTUBE_DOWNLOAD
+  TRANSCRIPTION
+  TRAIN_LORA
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ProjectStatus {
+  DRAFT
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}

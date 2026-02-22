@@ -1,0 +1,19 @@
+# Music Video Generator
+
+> AI music video generator that turns song lyrics into scene prompts, generated images, and a rendered video with a director workflow for iterative fixes.
+
+This file provides a concise map for LLMs. Use the linked markdown files for deeper context.
+
+## Product Docs
+
+- [Project overview](/llms/project-overview.md): High-level architecture, stack, and core entities.
+- [Frontend routes](/llms/frontend-routes.md): User-facing routes and page responsibilities.
+- [Pipeline flow](/llms/pipeline.md): End-to-end generation pipeline and outputs.
+
+## API
+
+- [Backend API reference](/llms/backend-api.md): Main REST endpoints and local development notes.
+
+## Optional
+
+- [Main repository README](/llms/readme-extract.md): Extracted operational notes for local setup and scripts.

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(python scripts/analyze_lyrics.py:*)",
+      "Bash(docker exec:*)",
+      "Bash(claude mcp add:*)",
+      "Bash(claude mcp list:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(where:*)",
+      "Bash(cmd //c \"where ffmpeg\")",
+      "Bash(# Buscar ffmpeg en más ubicaciones find /c/Users -name \"\"ffmpeg.exe\"\" | head -5 || \\\\ find /c/Program* -name \"\"ffmpeg.exe\"\")",
+      "Read(//c/**)",
+      "Bash( echo \"Buscando con cmd...\" cmd //c \"dir /s /b C:\\\\ffmpeg*.exe 2>nul\")",
+      "Bash(\"/c/Users/ivan1/OneDrive/Escritorio/project2/ffmpeg-2026-01-19-git-43dbc011fa-full_build/ffmpeg-2026-01-19-git-43dbc011fa-full_build/bin/ffmpeg.exe\" -version)",
+      "Bash(python scripts/render_video.py:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(python:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx:*)",
+      "WebFetch(domain:www.react.doctor)"
+    ]
+  }
+}

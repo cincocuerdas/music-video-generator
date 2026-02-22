@@ -27,6 +27,7 @@
     "test:redis-client": "jest redis-client.service.spec.ts --runInBand",
     "test:prod-guards": "node scripts/dev-tools/test_prod_guards.js",
     "test:repo-hygiene": "node scripts/dev-tools/test_repo_hygiene.js",
+    "test:artifact-hygiene": "node scripts/dev-tools/test_artifact_hygiene.js",
     "test:secret-hygiene": "node scripts/dev-tools/test_secret_hygiene.js",
     "test:bullmq-retries": "node scripts/dev-tools/test_bullmq_retries.js",
     "test:auth-throttling": "npm run test:ops:prepare && node scripts/dev-tools/test_auth_throttling.js",
@@ -41,7 +42,7 @@
     "test:throttling": "npm run test:ops:prepare && node scripts/dev-tools/test_throttling.js",
     "test:e2e-pipeline": "node scripts/dev-tools/test_e2e_pipeline_playwright.js",
     "test:ops:prepare": "node scripts/dev-tools/test_ops_prepare.js",
-    "test:ops": "npm run test:ops:prepare && npm run test:repo-hygiene && npm run test:secret-hygiene && npm run test:python-runner-contract && npm run test:webhook-security && npm run test:health-ops && npm run test:projects-optimization && npm run test:pipeline-script-contract && npm run test:redis-client && npm run test:prod-guards && npm run test:bullmq-retries && npm run test:auth-throttling && npm run test:pipeline-status && npm run test:external-chaos && npm run test:external-latency-chaos && npm run test:latency-slo-alerts && npm run test:health-webhook-receiver && npm run test:health-alert-webhook && npm run test:feedback-optimization && npm run test:resilience && npm run test:throttling",
+    "test:ops": "npm run test:ops:prepare && npm run test:repo-hygiene && npm run test:artifact-hygiene && npm run test:secret-hygiene && npm run test:python-runner-contract && npm run test:webhook-security && npm run test:health-ops && npm run test:projects-optimization && npm run test:pipeline-script-contract && npm run test:redis-client && npm run test:prod-guards && npm run test:bullmq-retries && npm run test:auth-throttling && npm run test:pipeline-status && npm run test:external-chaos && npm run test:external-latency-chaos && npm run test:latency-slo-alerts && npm run test:health-webhook-receiver && npm run test:health-alert-webhook && npm run test:feedback-optimization && npm run test:resilience && npm run test:throttling",
     "backend:up": "node scripts/dev-tools/backend_runtime.js up",
     "backend:down": "node scripts/dev-tools/backend_runtime.js down",
     "backend:status": "node scripts/dev-tools/backend_runtime.js status"

@@ -57,6 +57,9 @@ jobs:
       - name: Build backend
         run: npm run build
 
+      - name: Artifact hygiene tests
+        run: npm run test:artifact-hygiene
+
       - name: Health ops tests
         run: npm run test:health-ops
 

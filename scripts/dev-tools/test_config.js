@@ -1,4 +1,5 @@
 /* eslint-disable no-console */
+const { spawn } = require('child_process');
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:3000/api/v1';
 const DEFAULT_POSTGRES_CONTAINER = 'musicvideo-postgres';
@@ -77,10 +78,92 @@ function getRedisConnectionOptions() {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runDockerCommand(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const error = new Error(`docker ${args.join(' ')} failed with code ${code}`);
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    });
+  });
+}
+
+async function enablePgvectorExtension(options = {}) {
+  const {
+    retries = 30,
+    delayMs = 1000,
+    user = 'postgres',
+    database = 'musicvideo',
+    postgresContainer = getPostgresContainerName(),
+  } = options;
+
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      await runDockerCommand([
+        'exec',
+        postgresContainer,
+        'pg_isready',
+        '-U',
+        user,
+        '-d',
+        database,
+      ]);
+
+      await runDockerCommand([
+        'exec',
+        postgresContainer,
+        'psql',
+        '-U',
+        user,
+        '-d',
+        database,
+        '-c',
+        'CREATE EXTENSION IF NOT EXISTS vector;',
+      ]);
+
+      return { attempts: attempt, postgresContainer };
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  throw lastError || new Error('enable_pgvector_unknown_error');
+}
+
 module.exports = {
   getApiBaseUrl,
   getPostgresContainerName,
   getRedisContainerName,
   getProdGuardBaseEnv,
   getRedisConnectionOptions,
+  enablePgvectorExtension,
 };

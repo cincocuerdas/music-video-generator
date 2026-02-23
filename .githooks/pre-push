@@ -1,4 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-node scripts/dev-tools/pre_push_guard.js
+if [ "${PRE_PUSH_MODE:-}" = "full" ]; then
+  node scripts/dev-tools/pre_push_full_guard.js
+else
+  node scripts/dev-tools/pre_push_guard.js
+fi

@@ -21,6 +21,9 @@ Scripts moved from project root to keep the repository clean.
 - `test_pipeline_script_contract.js`: contract test for entry scripts (`youtube_download.py`, `transcribe_audio.py`) to ensure fail-safe `RESULT_JSON` with exit code `0` even on invalid input.
 - `test_e2e_pipeline_playwright.js`: browser E2E regression (project create -> pipeline complete -> scene seek sync -> feedback persistence).
 - `benchmark_generate_images_concurrency.js`: benchmark harness for image-generation stage concurrency (p50/p95 + recommendation report).
+- `benchmark_update_history.js`: appends latest benchmark result to rolling history (`ndjson` + markdown).
+- `benchmark_assert_slo.js`: validates benchmark SLO thresholds and p95 regression window.
+- `run_fire_drill.js`: executes outage recovery scenarios (Redis, Postgres restart, external dependency degradation) and writes recovery-time report.
 - `pre_push_guard.js`: critical fast checks used by local `pre-push` hook.
 - `pre_push_full_guard.js`: full `test:ops` execution for release-grade local push gate.
 - `projects.service.spec.ts`: unit regression for embedding prompt optimization (style-scoped similarity query and single fallback behavior).
@@ -56,6 +59,10 @@ npm run backend:status
 npm run backend:down
 npm run test:e2e-pipeline
 npm run bench:image-generation-concurrency
+npm run bench:image-generation-history
+npm run bench:image-generation-slo
+npm run bench:image-generation-full
+npm run drill:fire
 npm run test:pre-push-guard
 npm run test:pre-push-full
 npm run test:ops

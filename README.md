@@ -96,6 +96,19 @@ Run baseline benchmark for `generate_images.py` concurrency with p50/p95 report:
 npm run bench:image-generation-concurrency
 ```
 
+Run full benchmark pipeline (benchmark + history append + SLO assertion):
+
+```bash
+npm run bench:image-generation-full
+```
+
+History and SLO helpers:
+
+```bash
+npm run bench:image-generation-history
+npm run bench:image-generation-slo
+```
+
 Optional tuning env vars:
 
 - `BENCH_IMAGE_PROVIDER` (default: `mock`)
@@ -104,11 +117,31 @@ Optional tuning env vars:
 - `BENCH_WARMUP_RUNS` (default: `1`)
 - `BENCH_CONCURRENCY_LIST` (default: `1,2,4,6`)
 - `PYTHON_CMD` (default: `python` on Windows, `python3` on Unix)
+- `BENCH_SLO_P50_MS` / `BENCH_SLO_P95_MS` (SLO thresholds)
+- `BENCH_REGRESSION_P95_MULTIPLIER` (default: `1.25`)
+- `BENCH_REGRESSION_WINDOW` (default: `20`)
+- `BENCH_FAIL_ON_SLO_BREACH` (`true|false`)
 
 Outputs:
 
 - Markdown baseline: `docs/benchmarks/image-generation-concurrency-baseline.md`
 - Raw JSON sample: `storage/tmp-tests/image_generation_concurrency_<timestamp>.json`
+- History NDJSON: `docs/benchmarks/history/image-generation-concurrency-history.ndjson`
+- History markdown: `docs/benchmarks/history/image-generation-concurrency-history.md`
+- SLO status JSON: `storage/tmp-tests/benchmark_slo_latest.json`
+
+## Automated Fire Drill
+
+Run the backend fire drill scenarios and generate a recovery-time report:
+
+```bash
+npm run drill:fire
+```
+
+Outputs:
+
+- Report markdown: `docs/benchmarks/fire-drill-latest.md`
+- Raw JSON: `storage/tmp-tests/fire_drill_<timestamp>.json`
 
 ## E2E Pipeline Test
 

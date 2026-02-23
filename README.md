@@ -67,7 +67,10 @@ npm run start:dev
 npm run hooks:install
 ```
 
-This enables a `pre-commit` guard that blocks commits when quick hygiene checks fail.
+This enables:
+
+- `pre-commit`: quick hygiene checks (`repo` + `artifact`)
+- `pre-push`: critical backend guards (`secret hygiene`, `python runner contract`, `redis client`, `prod guards`)
 
 ## E2E Pipeline Test
 

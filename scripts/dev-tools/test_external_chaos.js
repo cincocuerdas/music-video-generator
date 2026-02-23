@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { getApiBaseUrl, getPostgresContainerName } = require('./test_config');
+const { getApiBaseUrl, getPostgresContainerName, enablePgvectorExtension } = require('./test_config');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const LOG_DIR = path.join(ROOT_DIR, 'storage', 'tmp-tests');
@@ -268,17 +268,7 @@ async function main() {
     await runCommand('docker', ['compose', 'up', '-d', 'postgres', 'redis']);
 
     console.log('step=enable_pgvector');
-    await runCommand('docker', [
-      'exec',
-      POSTGRES_CONTAINER,
-      'psql',
-      '-U',
-      'postgres',
-      '-d',
-      'musicvideo',
-      '-c',
-      'CREATE EXTENSION IF NOT EXISTS vector;',
-    ]);
+    await enablePgvectorExtension({ postgresContainer: POSTGRES_CONTAINER });
 
     console.log('step=db_push');
     const npmDbPush = resolveNpmCommand(['run', 'db:push']);

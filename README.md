@@ -61,6 +61,14 @@ npm run db:seed
 npm run start:dev
 ```
 
+### 6. Install local git hooks (recommended)
+
+```bash
+npm run hooks:install
+```
+
+This enables a `pre-commit` guard that blocks commits when quick hygiene checks fail.
+
 ## E2E Pipeline Test
 
 ### Manual Test with curl

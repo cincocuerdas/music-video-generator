@@ -1,6 +1,6 @@
 # Image Generation Concurrency Benchmark
 
-- Timestamp (UTC): 2026-02-23T02:33:15.257Z
+- Timestamp (UTC): 2026-02-23T02:50:29.656Z
 - Provider: `mock`
 - Scene count per run: `12`
 - Runs per concurrency: `5`
@@ -9,12 +9,12 @@
 
 | Concurrency | Runs | Mean (ms) | p50 (ms) | p95 (ms) | Min (ms) | Max (ms) | Speedup vs 1x (p50) |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 5 | 275.0 | 282.9 | 283.3 | 254.5 | 283.4 | 1.00x |
-| 2 | 5 | 275.2 | 273.0 | 302.8 | 247.7 | 308.3 | 1.04x |
-| 4 | 5 | 271.5 | 275.2 | 279.3 | 261.8 | 279.8 | 1.03x |
-| 6 | 5 | 264.9 | 267.7 | 282.0 | 238.7 | 282.8 | 1.06x |
+| 1 | 5 | 306.5 | 309.0 | 351.3 | 249.5 | 354.4 | 1.00x |
+| 2 | 5 | 288.0 | 289.9 | 304.1 | 263.4 | 307.4 | 1.07x |
+| 4 | 5 | 274.7 | 271.8 | 285.8 | 269.0 | 289.3 | 1.14x |
+| 6 | 5 | 252.1 | 256.2 | 263.8 | 230.4 | 264.1 | 1.21x |
 
-**Recommendation:** use `IMAGE_GENERATION_CONCURRENCY=4` (best p95=279.3ms).
+**Recommendation:** use `IMAGE_GENERATION_CONCURRENCY=6` (best p95=263.8ms).
 
 ## Notes
 

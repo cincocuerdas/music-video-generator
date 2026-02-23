@@ -72,6 +72,44 @@ This enables:
 - `pre-commit`: quick hygiene checks (`repo` + `artifact`)
 - `pre-push`: critical backend guards (`secret hygiene`, `python runner contract`, `redis client`, `prod guards`)
 
+To run full ops validation before pushing critical branches:
+
+```bash
+npm run test:pre-push-full
+```
+
+Or force full mode directly on push:
+
+```bash
+# Unix/macOS
+PRE_PUSH_MODE=full git push
+
+# Windows (PowerShell)
+$env:PRE_PUSH_MODE="full"; git push; Remove-Item Env:PRE_PUSH_MODE
+```
+
+## Performance Benchmark (Image Generation Concurrency)
+
+Run baseline benchmark for `generate_images.py` concurrency with p50/p95 report:
+
+```bash
+npm run bench:image-generation-concurrency
+```
+
+Optional tuning env vars:
+
+- `BENCH_IMAGE_PROVIDER` (default: `mock`)
+- `BENCH_SCENE_COUNT` (default: `12`)
+- `BENCH_RUNS_PER_CONCURRENCY` (default: `5`)
+- `BENCH_WARMUP_RUNS` (default: `1`)
+- `BENCH_CONCURRENCY_LIST` (default: `1,2,4,6`)
+- `PYTHON_CMD` (default: `python` on Windows, `python3` on Unix)
+
+Outputs:
+
+- Markdown baseline: `docs/benchmarks/image-generation-concurrency-baseline.md`
+- Raw JSON sample: `storage/tmp-tests/image_generation_concurrency_<timestamp>.json`
+
 ## E2E Pipeline Test
 
 ### Manual Test with curl

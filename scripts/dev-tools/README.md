@@ -20,6 +20,9 @@ Scripts moved from project root to keep the repository clean.
 - `backend_runtime.js`: managed backend lifecycle runner (`up|down|status`) with PID lock and health check.
 - `test_pipeline_script_contract.js`: contract test for entry scripts (`youtube_download.py`, `transcribe_audio.py`) to ensure fail-safe `RESULT_JSON` with exit code `0` even on invalid input.
 - `test_e2e_pipeline_playwright.js`: browser E2E regression (project create -> pipeline complete -> scene seek sync -> feedback persistence).
+- `benchmark_generate_images_concurrency.js`: benchmark harness for image-generation stage concurrency (p50/p95 + recommendation report).
+- `pre_push_guard.js`: critical fast checks used by local `pre-push` hook.
+- `pre_push_full_guard.js`: full `test:ops` execution for release-grade local push gate.
 - `projects.service.spec.ts`: unit regression for embedding prompt optimization (style-scoped similarity query and single fallback behavior).
 - `test_analysis.py`: legacy lyrics analysis test helper.
 - `hello_world.py`: minimal Python runner sanity check.
@@ -52,6 +55,9 @@ npm run backend:up
 npm run backend:status
 npm run backend:down
 npm run test:e2e-pipeline
+npm run bench:image-generation-concurrency
+npm run test:pre-push-guard
+npm run test:pre-push-full
 npm run test:ops
 ```
 

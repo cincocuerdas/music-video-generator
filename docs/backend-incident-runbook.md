@@ -142,3 +142,17 @@ Fallback safety remains active (`status=degraded` instead of hard crash).
   - config guards,
   - SLO threshold updates,
   - runbook updates.
+
+## 8. Automation
+
+- Weekly benchmark + SLO guard workflow:
+  - `.github/workflows/ops-benchmark-fire-drill.yml` (`Benchmark + SLO Regression Guard`)
+- Weekly fire drill workflow:
+  - `.github/workflows/ops-benchmark-fire-drill.yml` (`Weekly Fire Drill`)
+
+Local equivalents:
+
+```bash
+npm run bench:image-generation-full
+npm run drill:fire
+```

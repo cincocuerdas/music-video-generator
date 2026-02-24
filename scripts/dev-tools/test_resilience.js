@@ -17,6 +17,16 @@ const API_BASE_URL = getApiBaseUrl();
 const HEALTH_URL = `${API_BASE_URL}/health`;
 const RESILIENCE_REDIS_CONTAINER = getRedisContainerName();
 const POSTGRES_CONTAINER = getPostgresContainerName();
+const TEST_RESILIENCE_YOUTUBE_URL =
+  process.env.TEST_RESILIENCE_YOUTUBE_URL || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+const TEST_RESILIENCE_COMFYUI_URL =
+  process.env.TEST_RESILIENCE_COMFYUI_URL ||
+  process.env.COMFYUI_URL ||
+  'http://127.0.0.1:8188';
+const TEST_RESILIENCE_GEMINI_KEY =
+  process.env.TEST_RESILIENCE_GEMINI_KEY ||
+  process.env.GEMINI_API_KEY ||
+  'test-gemini-key';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -140,6 +150,7 @@ function createProjectPayload(title, lyrics) {
   return {
     title,
     lyrics,
+    youtubeUrl: TEST_RESILIENCE_YOUTUBE_URL,
     visualStyle: 'cinematic',
     aspectRatio: '16:9',
   };
@@ -207,6 +218,10 @@ function startBackend() {
       ...process.env,
       ALLOW_DEV_AUTH_BYPASS: process.env.ALLOW_DEV_AUTH_BYPASS || 'true',
       USE_MOCK_PROCESSORS: process.env.USE_MOCK_PROCESSORS || 'true',
+      IMAGE_PROVIDER: process.env.TEST_RESILIENCE_IMAGE_PROVIDER || 'comfyui',
+      LLM_PROVIDER: process.env.TEST_RESILIENCE_LLM_PROVIDER || 'gemini',
+      COMFYUI_URL: TEST_RESILIENCE_COMFYUI_URL,
+      GEMINI_API_KEY: TEST_RESILIENCE_GEMINI_KEY,
     },
   });
 

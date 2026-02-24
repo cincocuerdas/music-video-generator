@@ -1,0 +1,180 @@
+name: Ops Benchmark & Fire Drill
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 6 * * 1'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  benchmark-slo:
+    name: Benchmark + SLO Regression Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run benchmark
+        env:
+          BENCH_IMAGE_PROVIDER: mock
+          BENCH_SCENE_COUNT: 12
+          BENCH_RUNS_PER_CONCURRENCY: 5
+          BENCH_WARMUP_RUNS: 1
+          BENCH_CONCURRENCY_LIST: 1,2,4,6
+        run: npm run bench:image-generation-concurrency
+
+      - name: Update benchmark history
+        run: npm run bench:image-generation-history
+
+      - name: Assert benchmark SLO
+        id: slo
+        continue-on-error: true
+        env:
+          BENCH_FAIL_ON_SLO_BREACH: 'true'
+          BENCH_SLO_P50_MS: '350'
+          BENCH_SLO_P95_MS: '500'
+          BENCH_REGRESSION_P95_MULTIPLIER: '1.25'
+          BENCH_REGRESSION_WINDOW: '20'
+        run: npm run bench:image-generation-slo
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-artifacts
+          path: |
+            docs/benchmarks/image-generation-concurrency-baseline.md
+            docs/benchmarks/history/*
+            storage/tmp-tests/image_generation_concurrency_*.json
+            storage/tmp-tests/benchmark_slo_latest.json
+          if-no-files-found: ignore
+
+      - name: Persist benchmark history branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B benchmark-history
+          git add docs/benchmarks/history docs/benchmarks/image-generation-concurrency-baseline.md
+          if git diff --cached --quiet; then
+            echo "No benchmark history changes to commit."
+          else
+            git commit -m "chore: update benchmark history (${GITHUB_RUN_ID})"
+            git push origin benchmark-history --force-with-lease
+          fi
+
+      - name: Create benchmark regression alert issue
+        if: steps.slo.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const now = new Date().toISOString();
+            const title = `[OPS ALERT] Benchmark SLO regression (${now})`;
+            const body = [
+              'Automated benchmark SLO check failed.',
+              '',
+              `- Workflow: ${context.workflow}`,
+              `- Run URL: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Please inspect benchmark artifacts and performance regression details.',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['ops', 'benchmark', 'alert'],
+            });
+
+      - name: Fail on SLO breach
+        if: steps.slo.outcome == 'failure'
+        run: exit 1
+
+  fire-drill:
+    name: Weekly Fire Drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run fire drill scenarios
+        id: fire_drill
+        continue-on-error: true
+        run: npm run drill:fire
+
+      - name: Upload fire drill artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fire-drill-artifacts
+          path: |
+            docs/benchmarks/fire-drill-latest.md
+            storage/tmp-tests/fire_drill_*.json
+            storage/tmp-tests/*
+            storage/logs/*
+          if-no-files-found: ignore
+
+      - name: Create fire drill alert issue
+        if: steps.fire_drill.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const now = new Date().toISOString();
+            const title = `[OPS ALERT] Fire drill failed (${now})`;
+            const body = [
+              'Automated fire drill detected at least one failed recovery scenario.',
+              '',
+              `- Workflow: ${context.workflow}`,
+              `- Run URL: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Inspect `fire-drill-artifacts` for recovery timings and failing scenario details.',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['ops', 'fire-drill', 'alert'],
+            });
+
+      - name: Cleanup containers
+        if: always()
+        run: docker compose down -v
+
+      - name: Fail on fire drill error
+        if: steps.fire_drill.outcome == 'failure'
+        run: exit 1

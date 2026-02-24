@@ -5,6 +5,7 @@ export const QUEUE_NAMES = {
   IMAGE_GENERATION: 'image-generation',
   VIDEO_RENDER: 'video-render',
   TRAIN_LORA: 'train-lora',
+  DEAD_LETTER: 'dead-letter',
   NOTIFICATION: 'notification',
 } as const;
 

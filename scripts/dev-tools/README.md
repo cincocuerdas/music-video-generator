@@ -24,6 +24,7 @@ Scripts moved from project root to keep the repository clean.
 - `benchmark_update_history.js`: appends latest benchmark result to rolling history (`ndjson` + markdown).
 - `benchmark_assert_slo.js`: validates benchmark SLO thresholds and p95 regression window.
 - `run_fire_drill.js`: executes outage recovery scenarios (Redis, Postgres restart, external dependency degradation) and writes recovery-time report.
+- `cleanup_retention.js`: retention cleanup for old jobs/sessions and stale artifacts under `output/` + `storage/tmp-tests` (supports dry-run).
 - `pre_push_guard.js`: critical fast checks used by local `pre-push` hook.
 - `pre_push_full_guard.js`: full `test:ops` execution for release-grade local push gate.
 - `projects.service.spec.ts`: unit regression for embedding prompt optimization (style-scoped similarity query and single fallback behavior).
@@ -63,6 +64,7 @@ npm run bench:image-generation-history
 npm run bench:image-generation-slo
 npm run bench:image-generation-full
 npm run drill:fire
+npm run ops:cleanup
 npm run test:pre-push-guard
 npm run test:pre-push-full
 npm run test:ops

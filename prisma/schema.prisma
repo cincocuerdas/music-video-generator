@@ -37,6 +37,8 @@ model Project {
   feedbacks      GenerationFeedback[]
   jobs           Job[]
   user           User                 @relation(fields: [userId], references: [id])
+
+  @@index([userId, status, createdAt(sort: Desc)])
 }
 
 model GenerationFeedback {
@@ -52,6 +54,8 @@ model GenerationFeedback {
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([style, createdAt(sort: Desc)])
   @@index([style, score, createdAt(sort: Desc)])
 }
 
@@ -71,6 +75,9 @@ model Job {
   project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([projectId, status])
+  @@index([projectId, type, status])
+  @@index([updatedAt])
   @@index([type, status])
 }
 

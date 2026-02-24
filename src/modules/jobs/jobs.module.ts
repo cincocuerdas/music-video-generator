@@ -9,6 +9,7 @@ import { AnalysisProcessor } from './processors/analysis.processor';
 import { ImageGenerationProcessor } from './processors/image-generation.processor';
 import { VideoRenderProcessor } from './processors/video-render.processor';
 import { TrainLoraProcessor } from './processors/train-lora.processor';
+import { DeadLetterProcessor } from './processors/dead-letter.processor';
 import { PythonRunnerModule } from '../../common/services';
 import { ProjectsModule } from '../projects/projects.module';
 import { ObservabilityModule } from '../observability';
@@ -30,6 +31,7 @@ import { ObservabilityModule } from '../observability';
     ImageGenerationProcessor,
     VideoRenderProcessor,
     TrainLoraProcessor,
+    DeadLetterProcessor,
   ],
   exports: [JobsService],
 })

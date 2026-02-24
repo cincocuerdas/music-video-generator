@@ -7,8 +7,11 @@ import {
   Param,
   Delete,
   Req,
+  Query,
   UseGuards,
   ParseUUIDPipe,
+  DefaultValuePipe,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
@@ -36,6 +39,26 @@ export class JobsController {
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
     return this.jobsService.createForUser(userId, createJobDto);
+  }
+
+  @Get('dead-letter')
+  @Throttle(THROTTLE_RULES.jobsCreate)
+  listDeadLetter(
+    @Req() req: AuthenticatedRequest,
+    @Query('limit', new DefaultValuePipe(25), ParseIntPipe) limit: number,
+  ) {
+    const userId = this.authService.getUserIdFromRequest(req);
+    return this.jobsService.listDeadLettersForUser(userId, limit);
+  }
+
+  @Post('dead-letter/:id/replay')
+  @Throttle(THROTTLE_RULES.jobsPipelineStart)
+  replayDeadLetter(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    const userId = this.authService.getUserIdFromRequest(req);
+    return this.jobsService.replayDeadLetterForUser(id, userId);
   }
 
   @Get(':id')

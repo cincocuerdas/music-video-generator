@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { JobStatus, JobType } from '@prisma/client';
+import { CircuitBreakerService } from '../../common/services';
 import { PrismaService } from '../prisma';
 import { QUEUE_NAMES } from '../queue';
 import { HealthAlertingService } from './health-alerting.service';
@@ -85,6 +86,7 @@ export class HealthService {
     private readonly prisma: PrismaService,
     private readonly healthAlertingService: HealthAlertingService,
     private readonly eventsMetricsService: EventsMetricsService,
+    private readonly circuitBreakerService: CircuitBreakerService,
     @InjectQueue(QUEUE_NAMES.YOUTUBE_DOWNLOAD)
     private readonly youtubeDownloadQueue: Queue,
     @InjectQueue(QUEUE_NAMES.TRANSCRIPTION)
@@ -499,6 +501,7 @@ export class HealthService {
       },
       retryingIsSampled: queues.some((queue) => queue.retryingSampled),
       realtimeEvents,
+      circuitBreakers: this.circuitBreakerService.snapshot(),
       errors,
     };
   }

@@ -4,16 +4,18 @@ import { Logger } from '@nestjs/common';
 import { JobsService } from '../jobs.service';
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
-import { PythonRunnerService } from '../../../common/services';
+import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
 import {
   assessScriptResult,
   buildRetryCurrentStep,
+  classifyJobError,
   emitCompletedUpdate,
   emitFailedUpdate,
   emitProcessingUpdate,
   getJobTraceContext,
+  shouldRetryError,
   updateProgressAndEmit,
 } from './retry.utils';
 
@@ -24,6 +26,7 @@ export class TrainLoraProcessor extends WorkerHost {
   constructor(
     private readonly jobsService: JobsService,
     private readonly pythonRunnerService: PythonRunnerService,
+    private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
     private readonly sentryService: SentryService,
   ) {
@@ -31,10 +34,11 @@ export class TrainLoraProcessor extends WorkerHost {
   }
 
   async process(
-    job: Job<{ jobId: string; projectId: string; style?: string }>,
+    job: Job<{ jobId: string; projectId: string; style?: string; correlationId?: string }>,
   ): Promise<any> {
-    const { jobId, projectId, style } = job.data || {};
-    const trace = getJobTraceContext(job, JobType.TRAIN_LORA, projectId, jobId);
+    const { jobId, projectId, style, correlationId } = job.data || {};
+    const trace = getJobTraceContext(job, JobType.TRAIN_LORA, projectId, jobId, correlationId);
+    const circuitKey = 'train-lora';
 
     if (!jobId || !projectId || !style) {
       this.logger.warn(
@@ -67,6 +71,11 @@ export class TrainLoraProcessor extends WorkerHost {
         progress: 15,
         currentStep: `Preparing dataset for "${style}"`,
       });
+
+      const circuitDecision = this.circuitBreaker.canExecute(circuitKey);
+      if (!circuitDecision.allowed) {
+        throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
+      }
 
       const result = await this.pythonRunnerService.runScript('train_style_lora.py', [
         style,
@@ -116,6 +125,7 @@ export class TrainLoraProcessor extends WorkerHost {
       }
       await this.jobsService.updateProgress(jobId, 100, completionStep);
       await this.jobsService.markAsCompleted(jobId, result);
+      this.circuitBreaker.recordSuccess(circuitKey);
 
       emitCompletedUpdate(
         this.eventsGateway,
@@ -127,12 +137,23 @@ export class TrainLoraProcessor extends WorkerHost {
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      const retryTrace = getJobTraceContext(job, JobType.TRAIN_LORA, projectId, jobId);
+      const retryTrace = getJobTraceContext(
+        job,
+        JobType.TRAIN_LORA,
+        projectId,
+        jobId,
+        correlationId,
+      );
+      const classification = classifyJobError(error);
 
-      if (retryTrace.hasRemainingAttempts) {
+      if (classification.retryable) {
+        this.circuitBreaker.recordFailure(circuitKey, message);
+      }
+
+      if (shouldRetryError(error, retryTrace)) {
         const retryStep = buildRetryCurrentStep(retryTrace);
         this.logger.warn(
-          `${retryTrace.prefix} temporary failure, retry scheduled: ${message}`,
+          `${retryTrace.prefix} temporary failure (${classification.category}), retry scheduled: ${message}`,
         );
         await updateProgressAndEmit({
           jobsService: this.jobsService,
@@ -157,12 +178,29 @@ export class TrainLoraProcessor extends WorkerHost {
           projectId,
           jobId,
           style,
+          correlationId: retryTrace.correlationId,
           attemptsMade: retryTrace.attemptNumber,
           maxAttempts: retryTrace.maxAttempts,
           message,
+          errorCategory: classification.category,
+          retryable: classification.retryable,
         },
       });
       await this.jobsService.markAsFailed(jobId, message);
+      await this.jobsService.enqueueDeadLetter({
+        sourceQueue: QUEUE_NAMES.TRAIN_LORA,
+        projectId,
+        jobId,
+        jobType: JobType.TRAIN_LORA,
+        correlationId: retryTrace.correlationId,
+        message,
+        attemptsMade: retryTrace.attemptNumber,
+        maxAttempts: retryTrace.maxAttempts,
+        retryable: classification.retryable,
+        category: classification.category,
+        payload: job.data as Record<string, unknown>,
+        capturedAt: new Date().toISOString(),
+      });
 
       emitFailedUpdate(
         this.eventsGateway,

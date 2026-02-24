@@ -42,11 +42,25 @@ docker exec -it musicvideo-redis redis-cli ping
 docker exec -it musicvideo-postgres pg_isready -U postgres -d musicvideo
 ```
 
+### Dead-letter review / replay (authenticated)
+
+```bash
+# List last dead-letter entries for current user
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:3000/api/v1/jobs/dead-letter?limit=25"
+
+# Replay one dead-letter item
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:3000/api/v1/jobs/dead-letter/{DEAD_LETTER_ID}/replay"
+```
+
 ## 3. Decision Tree
 
 ### A) `failed` spikes in one stage
 
 1. Find failing `jobType` in backend logs.
+2. Check circuit breaker snapshot in `/health/ops` (`circuitBreakers.entries`):
+   - if a stage is `open`, wait cooldown or restore dependency first.
 2. Validate external dependency:
    - `YOUTUBE_DOWNLOAD`: source URL present and reachable.
    - `TRANSCRIPTION`/`ANALYZE_LYRICS`: Gemini key/quota/latency.
@@ -155,4 +169,5 @@ Local equivalents:
 ```bash
 npm run bench:image-generation-full
 npm run drill:fire
+npm run ops:cleanup
 ```

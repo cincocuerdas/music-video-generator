@@ -9,6 +9,17 @@ export interface RetryState {
   hasRemainingAttempts: boolean;
 }
 
+export interface ErrorClassification {
+  category: 'transient' | 'permanent' | 'unknown';
+  retryable: boolean;
+  reason: string;
+}
+
+export interface ScriptContractValidation {
+  valid: boolean;
+  issues: string[];
+}
+
 export function getRetryState(job: Job): RetryState {
   const maxAttempts =
     typeof job.opts.attempts === 'number' && job.opts.attempts > 0
@@ -27,6 +38,7 @@ export interface JobTraceContext extends RetryState {
   projectId: string;
   jobId: string;
   jobType: string;
+  correlationId: string;
   prefix: string;
 }
 
@@ -35,17 +47,26 @@ export function getJobTraceContext(
   jobType: string,
   projectId?: string,
   jobId?: string,
+  correlationId?: string,
 ): JobTraceContext {
   const retry = getRetryState(job);
   const resolvedProjectId = projectId || 'unknown-project';
   const resolvedJobId = jobId || 'unknown-job';
+  const resolvedCorrelationId =
+    correlationId ||
+    (job.data &&
+    typeof job.data === 'object' &&
+    typeof (job.data as Record<string, unknown>).correlationId === 'string'
+      ? ((job.data as Record<string, unknown>).correlationId as string)
+      : `${resolvedProjectId}:${resolvedJobId}`);
 
   return {
     ...retry,
     projectId: resolvedProjectId,
     jobId: resolvedJobId,
     jobType,
-    prefix: `[project=${resolvedProjectId} jobType=${jobType} jobId=${resolvedJobId} attempt=${retry.attemptNumber}/${retry.maxAttempts}]`,
+    correlationId: resolvedCorrelationId,
+    prefix: `[cid=${resolvedCorrelationId} project=${resolvedProjectId} jobType=${jobType} jobId=${resolvedJobId} attempt=${retry.attemptNumber}/${retry.maxAttempts}]`,
   };
 }
 
@@ -63,6 +84,74 @@ export interface ScriptResultAssessment {
   normalizedStatus: ScriptNormalizedStatus;
   rawStatus: string | null;
   message: string | null;
+  contractValid: boolean;
+  contractIssues: string[];
+}
+
+export function classifyJobError(error: unknown): ErrorClassification {
+  const message = (error instanceof Error ? error.message : String(error || 'unknown error')).trim();
+  const normalized = message.toLowerCase();
+
+  const permanentPatterns = [
+    /no youtube url found/,
+    /missing youtube url/,
+    /invalid youtube url/,
+    /invalid or expired token/,
+    /missing bearer token/,
+    /not found/,
+    /\bstatus code 40[0-9]\b/,
+    /\bstatus code 404\b/,
+    /\bstatus code 422\b/,
+    /schema validation failed/,
+    /invalid result_json contract/,
+  ];
+
+  const transientPatterns = [
+    /timeout/,
+    /timed out/,
+    /etimedout/,
+    /econnreset/,
+    /econnrefused/,
+    /ehostunreach/,
+    /socket hang up/,
+    /\bstatus code 429\b/,
+    /\bstatus code 5\d\d\b/,
+    /service unavailable/,
+    /temporarily unavailable/,
+    /rate limit/,
+    /circuit open/,
+    /retry/i,
+  ];
+
+  if (permanentPatterns.some((pattern) => pattern.test(normalized))) {
+    return {
+      category: 'permanent',
+      retryable: false,
+      reason: message || 'Permanent error',
+    };
+  }
+
+  if (transientPatterns.some((pattern) => pattern.test(normalized))) {
+    return {
+      category: 'transient',
+      retryable: true,
+      reason: message || 'Transient error',
+    };
+  }
+
+  return {
+    category: 'unknown',
+    retryable: true,
+    reason: message || 'Unknown error',
+  };
+}
+
+export function shouldRetryError(error: unknown, retryState: RetryState): boolean {
+  if (!retryState.hasRemainingAttempts) {
+    return false;
+  }
+  const classification = classifyJobError(error);
+  return classification.retryable;
 }
 
 function extractScriptMessage(result: unknown): string | null {
@@ -81,7 +170,42 @@ function extractScriptMessage(result: unknown): string | null {
   return null;
 }
 
+export function validateScriptResultContract(result: unknown): ScriptContractValidation {
+  if (!result || typeof result !== 'object') {
+    return {
+      valid: false,
+      issues: ['result must be a JSON object'],
+    };
+  }
+
+  const payload = result as Record<string, unknown>;
+  const issues: string[] = [];
+  const status = payload.status;
+  const success = payload.success;
+  const degraded = payload.degraded;
+  const degradedReasons = payload.degradedReasons;
+
+  if (typeof status !== 'string' || !['success', 'degraded', 'failed'].includes(status.toLowerCase())) {
+    issues.push('status must be one of success|degraded|failed');
+  }
+  if (typeof success !== 'boolean') {
+    issues.push('success must be boolean');
+  }
+  if (typeof degraded !== 'boolean') {
+    issues.push('degraded must be boolean');
+  }
+  if (!Array.isArray(degradedReasons)) {
+    issues.push('degradedReasons must be an array');
+  }
+
+  return {
+    valid: issues.length === 0,
+    issues,
+  };
+}
+
 export function assessScriptResult(result: unknown): ScriptResultAssessment {
+  const contract = validateScriptResultContract(result);
   const rawStatus =
     result && typeof result === 'object' && typeof (result as Record<string, unknown>).status === 'string'
       ? String((result as Record<string, unknown>).status).trim().toLowerCase()
@@ -92,11 +216,23 @@ export function assessScriptResult(result: unknown): ScriptResultAssessment {
       ? Boolean((result as Record<string, unknown>).success)
       : undefined;
 
+  if (!contract.valid) {
+    return {
+      normalizedStatus: 'failed',
+      rawStatus,
+      message: `Invalid RESULT_JSON contract: ${contract.issues.join(', ')}`,
+      contractValid: false,
+      contractIssues: contract.issues,
+    };
+  }
+
   if (rawStatus === 'failed' || successFlag === false) {
     return {
       normalizedStatus: 'failed',
       rawStatus,
       message: message || 'Script reported failed status',
+      contractValid: true,
+      contractIssues: [],
     };
   }
 
@@ -105,6 +241,8 @@ export function assessScriptResult(result: unknown): ScriptResultAssessment {
       normalizedStatus: 'degraded',
       rawStatus,
       message: message || 'Script completed with degraded output',
+      contractValid: true,
+      contractIssues: [],
     };
   }
 
@@ -113,6 +251,8 @@ export function assessScriptResult(result: unknown): ScriptResultAssessment {
       normalizedStatus: 'success',
       rawStatus,
       message,
+      contractValid: true,
+      contractIssues: [],
     };
   }
 
@@ -120,6 +260,8 @@ export function assessScriptResult(result: unknown): ScriptResultAssessment {
     normalizedStatus: 'unknown',
     rawStatus,
     message,
+    contractValid: true,
+    contractIssues: [],
   };
 }
 
@@ -221,3 +363,4 @@ export async function updateProgressAndEmit({
   await jobsService.updateProgress(jobId, progress, currentStep);
   emitProcessingUpdate(eventsGateway, projectId, jobType, progress, currentStep);
 }
+

@@ -4,6 +4,7 @@ import { Logger } from '@nestjs/common';
 import { JobsService } from '../jobs.service';
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
+import { CircuitBreakerService } from '../../../common/services/circuit-breaker.service';
 import { PythonRunnerService, ProgressEvent } from '../../../common/services/python-runner.service';
 import { EventsGateway } from '../../events';
 import { ProjectsService } from '../../projects/projects.service';
@@ -11,10 +12,12 @@ import { SentryService } from '../../observability';
 import {
   assessScriptResult,
   buildRetryCurrentStep,
+  classifyJobError,
   emitCompletedUpdate,
   emitFailedUpdate,
   emitProcessingUpdate,
   getJobTraceContext,
+  shouldRetryError,
   updateProgressAndEmit,
 } from './retry.utils';
 
@@ -25,6 +28,7 @@ export class ImageGenerationProcessor extends WorkerHost {
   constructor(
     private readonly jobsService: JobsService,
     private readonly pythonRunner: PythonRunnerService,
+    private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
     private readonly projectsService: ProjectsService,
     private readonly sentryService: SentryService,
@@ -32,9 +36,10 @@ export class ImageGenerationProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<{ jobId: string; projectId: string }>): Promise<any> {
-    const { jobId, projectId } = job.data || {};
-    const trace = getJobTraceContext(job, JobType.GENERATE_IMAGES, projectId, jobId);
+  async process(job: Job<{ jobId: string; projectId: string; correlationId?: string }>): Promise<any> {
+    const { jobId, projectId, correlationId } = job.data || {};
+    const trace = getJobTraceContext(job, JobType.GENERATE_IMAGES, projectId, jobId, correlationId);
+    const circuitKey = 'image-generation';
 
     // Defensive check: skip zombie jobs with missing data
     if (!jobId || !projectId) {
@@ -66,6 +71,13 @@ export class ImageGenerationProcessor extends WorkerHost {
       // Run Python script with progress callback
       // Pass optimization as JSON argument
       const optimizationArg = JSON.stringify(optimization);
+      const circuitDecision = this.circuitBreaker.canExecute(circuitKey);
+      if (!circuitDecision.allowed) {
+        throw new Error(
+          `Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`,
+        );
+      }
+
       const result = await this.pythonRunner.runScriptWithProgress(
         'generate_images.py',
         [projectId, jobId, optimizationArg],
@@ -121,6 +133,7 @@ export class ImageGenerationProcessor extends WorkerHost {
 
       await this.jobsService.updateProgress(jobId, 100, completionStep);
       await this.jobsService.markAsCompleted(jobId, result);
+      this.circuitBreaker.recordSuccess(circuitKey);
 
       emitCompletedUpdate(
         this.eventsGateway,
@@ -137,12 +150,23 @@ export class ImageGenerationProcessor extends WorkerHost {
 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const retryTrace = getJobTraceContext(job, JobType.GENERATE_IMAGES, projectId, jobId);
+      const retryTrace = getJobTraceContext(
+        job,
+        JobType.GENERATE_IMAGES,
+        projectId,
+        jobId,
+        correlationId,
+      );
+      const classification = classifyJobError(error);
 
-      if (retryTrace.hasRemainingAttempts) {
+      if (classification.retryable) {
+        this.circuitBreaker.recordFailure(circuitKey, message);
+      }
+
+      if (shouldRetryError(error, retryTrace)) {
         const retryStep = buildRetryCurrentStep(retryTrace);
         this.logger.warn(
-          `${retryTrace.prefix} temporary failure, retry scheduled: ${message}`,
+          `${retryTrace.prefix} temporary failure (${classification.category}), retry scheduled: ${message}`,
         );
         await updateProgressAndEmit({
           jobsService: this.jobsService,
@@ -166,12 +190,29 @@ export class ImageGenerationProcessor extends WorkerHost {
         extra: {
           projectId,
           jobId,
+          correlationId: retryTrace.correlationId,
           attemptsMade: retryTrace.attemptNumber,
           maxAttempts: retryTrace.maxAttempts,
           message,
+          errorCategory: classification.category,
+          retryable: classification.retryable,
         },
       });
       await this.jobsService.markAsFailed(jobId, message);
+      await this.jobsService.enqueueDeadLetter({
+        sourceQueue: QUEUE_NAMES.IMAGE_GENERATION,
+        projectId,
+        jobId,
+        jobType: JobType.GENERATE_IMAGES,
+        correlationId: retryTrace.correlationId,
+        message,
+        attemptsMade: retryTrace.attemptNumber,
+        maxAttempts: retryTrace.maxAttempts,
+        retryable: classification.retryable,
+        category: classification.category,
+        payload: job.data as Record<string, unknown>,
+        capturedAt: new Date().toISOString(),
+      });
 
       emitFailedUpdate(
         this.eventsGateway,

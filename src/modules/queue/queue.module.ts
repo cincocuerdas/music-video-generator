@@ -126,6 +126,7 @@ const parsePositiveNumber = (value: string | undefined, fallback: number): numbe
       { name: QUEUE_NAMES.IMAGE_GENERATION },
       { name: QUEUE_NAMES.VIDEO_RENDER },
       { name: QUEUE_NAMES.TRAIN_LORA },
+      { name: QUEUE_NAMES.DEAD_LETTER },
       { name: QUEUE_NAMES.NOTIFICATION },
     ),
   ],

@@ -143,6 +143,21 @@ Outputs:
 - Report markdown: `docs/benchmarks/fire-drill-latest.md`
 - Raw JSON: `storage/tmp-tests/fire_drill_<timestamp>.json`
 
+## Ops Retention Cleanup
+
+Dry-run cleanup for old jobs/sessions/artifacts (safe by default):
+
+```bash
+npm run ops:cleanup
+```
+
+Apply cleanup for real:
+
+```bash
+# PowerShell
+$env:CLEANUP_DRY_RUN="false"; npm run ops:cleanup; Remove-Item Env:CLEANUP_DRY_RUN
+```
+
 ## E2E Pipeline Test
 
 ### Manual Test with curl

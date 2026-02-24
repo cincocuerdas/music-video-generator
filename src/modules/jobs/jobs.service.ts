@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, BadRequestException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { JobsOptions, Queue } from 'bullmq';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma';
 import { Job, JobType, JobStatus, ProjectStatus, Prisma } from '@prisma/client';
 import { QUEUE_NAMES } from '../queue';
@@ -116,6 +117,21 @@ interface StartPipelineResult {
   mode: StartPipelineMode;
 }
 
+export interface DeadLetterEntry {
+  sourceQueue: string;
+  projectId: string;
+  jobId: string;
+  jobType: JobType;
+  correlationId: string;
+  message: string;
+  attemptsMade: number;
+  maxAttempts: number;
+  retryable: boolean;
+  category: 'transient' | 'permanent' | 'unknown';
+  payload?: Record<string, unknown>;
+  capturedAt: string;
+}
+
 @Injectable()
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
@@ -139,6 +155,8 @@ export class JobsService {
     private readonly videoRenderQueue: Queue,
     @InjectQueue(QUEUE_NAMES.TRAIN_LORA)
     private readonly trainLoraQueue: Queue,
+    @InjectQueue(QUEUE_NAMES.DEAD_LETTER)
+    private readonly deadLetterQueue: Queue,
   ) { }
 
   private parsePositiveIntEnv(key: string, fallback: number): number {
@@ -148,6 +166,51 @@ export class JobsService {
     }
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  }
+
+  private ensureProviderPreflight(): void {
+    const imageProvider = (process.env.IMAGE_PROVIDER || 'comfyui').trim().toLowerCase();
+    const llmProvider = (process.env.LLM_PROVIDER || 'gemini').trim().toLowerCase();
+
+    if (imageProvider === 'comfyui' && !(process.env.COMFYUI_URL || '').trim()) {
+      throw new BadRequestException(
+        'Pipeline preflight failed: COMFYUI_URL is missing while IMAGE_PROVIDER=comfyui.',
+      );
+    }
+
+    if (imageProvider === 'replicate' && !(process.env.REPLICATE_API_TOKEN || '').trim()) {
+      throw new BadRequestException(
+        'Pipeline preflight failed: REPLICATE_API_TOKEN is missing while IMAGE_PROVIDER=replicate.',
+      );
+    }
+
+    if (llmProvider === 'gemini' && !(process.env.GEMINI_API_KEY || '').trim()) {
+      throw new BadRequestException(
+        'Pipeline preflight failed: GEMINI_API_KEY is missing while LLM_PROVIDER=gemini.',
+      );
+    }
+  }
+
+  private ensureProjectPreflight(project: {
+    youtubeUrl: string | null;
+    audioUrl: string | null;
+    lyrics: string | null;
+  }): void {
+    const youtubeUrl = (project.youtubeUrl || '').trim();
+    const audioUrl = (project.audioUrl || '').trim();
+    const lyrics = (project.lyrics || '').trim();
+
+    if (!youtubeUrl && !audioUrl && !lyrics) {
+      throw new BadRequestException(
+        'Pipeline preflight failed: project has no source input (youtubeUrl/audioUrl/lyrics).',
+      );
+    }
+
+    if (!youtubeUrl) {
+      throw new BadRequestException(
+        'Pipeline preflight failed: missing youtubeUrl. This pipeline currently requires YouTube source for download/transcription stages.',
+      );
+    }
   }
 
   private async assertProjectOwnership(projectId: string, userId: string): Promise<void> {
@@ -333,12 +396,21 @@ export class JobsService {
 
         const project = await tx.project.findUnique({
           where: { id: projectId },
-          select: { id: true, status: true },
+          select: {
+            id: true,
+            status: true,
+            youtubeUrl: true,
+            audioUrl: true,
+            lyrics: true,
+          },
         });
 
         if (!project) {
           throw new NotFoundException(`Project with id ${projectId} not found`);
         }
+
+        this.ensureProviderPreflight();
+        this.ensureProjectPreflight(project);
 
         const existingPipelineJobs = await tx.job.findMany({
           where: {
@@ -376,12 +448,16 @@ export class JobsService {
         });
 
         const createdJobs: Job[] = [];
+        const pipelineCorrelationId = `pipeline:${projectId}:${randomUUID().slice(0, 8)}`;
         for (let i = 0; i < PIPELINE_ORDER.length; i++) {
           const job = await tx.job.create({
             data: {
               projectId,
               type: PIPELINE_ORDER[i],
               status: JobStatus.PENDING,
+              inputData: {
+                correlationId: pipelineCorrelationId,
+              },
             },
           });
           createdJobs.push(job);
@@ -608,6 +684,128 @@ export class JobsService {
     this.logger.log(`Pipeline cancelled for project ${projectId}`);
   }
 
+  async enqueueDeadLetter(entry: DeadLetterEntry): Promise<void> {
+    await this.deadLetterQueue.add('dead-letter', entry, {
+      removeOnComplete: 500,
+      removeOnFail: 1000,
+    });
+  }
+
+  async listDeadLettersForUser(userId: string, limit = 25): Promise<Record<string, unknown>> {
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const jobs = await this.deadLetterQueue.getJobs(
+      ['waiting', 'active', 'delayed', 'completed', 'failed'],
+      0,
+      safeLimit - 1,
+      true,
+    );
+
+    const projectIds = Array.from(
+      new Set(
+        jobs
+          .map((job) =>
+            job.data && typeof job.data === 'object'
+              ? (job.data as Record<string, unknown>).projectId
+              : null,
+          )
+          .filter((value): value is string => typeof value === 'string'),
+      ),
+    );
+
+    const ownedProjects = await this.prisma.project.findMany({
+      where: { userId, id: { in: projectIds } },
+      select: { id: true },
+    });
+    const ownedProjectIds = new Set(ownedProjects.map((project) => project.id));
+
+    const ownedItems = jobs.filter((job) => {
+      const projectId =
+        job.data && typeof job.data === 'object'
+          ? (job.data as Record<string, unknown>).projectId
+          : null;
+      return typeof projectId === 'string' && ownedProjectIds.has(projectId);
+    });
+
+    const items = await Promise.all(
+      ownedItems.map(async (job) => ({
+        deadLetterId: String(job.id),
+        status: await job.getState(),
+        name: job.name,
+        attemptsMade: job.attemptsMade,
+        failedReason: job.failedReason || null,
+        timestamp: job.timestamp,
+        data: job.data,
+      })),
+    );
+
+    return {
+      total: items.length,
+      items,
+    };
+  }
+
+  async replayDeadLetterForUser(deadLetterId: string, userId: string): Promise<Record<string, unknown>> {
+    const deadLetterJob = await this.deadLetterQueue.getJob(deadLetterId);
+    if (!deadLetterJob) {
+      throw new NotFoundException(`Dead-letter job ${deadLetterId} not found`);
+    }
+
+    const data =
+      deadLetterJob.data && typeof deadLetterJob.data === 'object'
+        ? (deadLetterJob.data as Record<string, unknown>)
+        : {};
+    const projectId = typeof data.projectId === 'string' ? data.projectId : '';
+    if (!projectId) {
+      throw new BadRequestException('Dead-letter payload does not include projectId');
+    }
+
+    await this.assertProjectOwnership(projectId, userId);
+
+    const originalJobId = typeof data.jobId === 'string' ? data.jobId : '';
+    if (!originalJobId) {
+      throw new BadRequestException('Dead-letter payload does not include original jobId');
+    }
+
+    const originalJob = await this.prisma.job.findUnique({ where: { id: originalJobId } });
+    if (!originalJob) {
+      throw new NotFoundException(`Original job ${originalJobId} not found`);
+    }
+
+    if (originalJob.status === JobStatus.PENDING || originalJob.status === JobStatus.PROCESSING) {
+      return {
+        replayed: false,
+        reason: `Job ${originalJobId} is already ${originalJob.status}`,
+        jobId: originalJobId,
+      };
+    }
+
+    const replayed = await this.prisma.job.update({
+      where: { id: originalJob.id },
+      data: {
+        status: JobStatus.PENDING,
+        progress: 0,
+        currentStep: 'Replay requested from dead-letter queue',
+        errorMessage: null,
+        workerId: null,
+      },
+    });
+
+    await this.dispatchJob(replayed);
+    await deadLetterJob.updateData({
+      ...data,
+      replayedAt: new Date().toISOString(),
+      replayedOriginalJobId: originalJobId,
+    });
+
+    return {
+      replayed: true,
+      deadLetterId,
+      jobId: replayed.id,
+      projectId: replayed.projectId,
+      type: replayed.type,
+    };
+  }
+
   async triggerStyleLoraTraining(
     projectId: string,
     style: string,
@@ -759,15 +957,21 @@ export class JobsService {
   }
 
   private async dispatchJob(job: Job): Promise<void> {
-    const style =
+    const inputData =
       job.inputData && typeof job.inputData === 'object'
-        ? (job.inputData as Record<string, unknown>).style
-        : undefined;
+        ? (job.inputData as Record<string, unknown>)
+        : {};
+    const style = inputData.style;
+    const correlationId =
+      typeof inputData.correlationId === 'string' && inputData.correlationId.trim()
+        ? inputData.correlationId.trim()
+        : `${job.projectId}:${job.id}:${randomUUID().slice(0, 8)}`;
 
     const payload = {
       jobId: job.id,
       projectId: job.projectId,
       style: typeof style === 'string' ? style : undefined,
+      correlationId,
     };
     const queueOptions = this.getQueueJobOptions(job.type, job.id);
 

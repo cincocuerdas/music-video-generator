@@ -31,6 +31,15 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly uuidRegex =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  private readonly sessionPruneIntervalMs = this.parsePositiveInt(
+    process.env.AUTH_SESSION_PRUNE_INTERVAL_MS,
+    10 * 60 * 1000,
+  );
+  private readonly revokedSessionRetentionDays = this.parsePositiveInt(
+    process.env.AUTH_SESSION_REVOKED_RETENTION_DAYS,
+    30,
+  );
+  private lastSessionPruneAtMs = 0;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -54,7 +63,9 @@ export class AuthService {
     const userId = this.resolveDevUserId(dto);
     await this.upsertDevUser(userId, dto);
 
-    return this.issueTokenPair(userId, context);
+    const pair = await this.issueTokenPair(userId, context);
+    void this.pruneStaleSessionsIfDue();
+    return pair;
   }
 
   async refreshSession(
@@ -128,6 +139,7 @@ export class AuthService {
         userAgent: context.userAgent,
       },
     });
+    void this.pruneStaleSessionsIfDue();
 
     return {
       userId,
@@ -162,7 +174,42 @@ export class AuthService {
       // Logout should be idempotent.
     }
 
+    void this.pruneStaleSessionsIfDue();
     return { success: true };
+  }
+
+  private async pruneStaleSessionsIfDue(): Promise<void> {
+    const nowMs = Date.now();
+    if (nowMs - this.lastSessionPruneAtMs < this.sessionPruneIntervalMs) {
+      return;
+    }
+
+    this.lastSessionPruneAtMs = nowMs;
+
+    const now = new Date(nowMs);
+    const revokedCutoff = new Date(
+      nowMs - this.revokedSessionRetentionDays * 24 * 60 * 60 * 1000,
+    );
+
+    try {
+      await this.prisma.authSession.deleteMany({
+        where: {
+          OR: [
+            { expiresAt: { lt: now } },
+            { revokedAt: { lt: revokedCutoff } },
+          ],
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Could not prune stale auth sessions: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private parsePositiveInt(raw: string | undefined, fallback: number): number {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
   }
 
   authenticateRequest(req: Request): AuthenticatedUser {

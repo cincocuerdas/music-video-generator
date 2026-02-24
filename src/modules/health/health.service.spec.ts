@@ -33,11 +33,20 @@ describe('HealthService.getDegradedStageSnapshot', () => {
         updatedAt: new Date().toISOString(),
       }),
     };
+    const circuitBreakerStub = {
+      snapshot: jest.fn().mockReturnValue({
+        generatedAt: new Date().toISOString(),
+        failureThreshold: 3,
+        cooldownMs: 60000,
+        entries: [],
+      }),
+    };
 
     const service = new HealthService(
       prisma as any,
       alertingStub as any,
       eventsMetricsStub as any,
+      circuitBreakerStub as any,
       queueStub as any,
       queueStub as any,
       queueStub as any,

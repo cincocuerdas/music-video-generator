@@ -4,3 +4,4 @@ export * from "./analysis.processor";
 export * from "./image-generation.processor";
 export * from "./video-render.processor";
 export * from "./train-lora.processor";
+export * from "./dead-letter.processor";

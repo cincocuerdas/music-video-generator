@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
-interface CircuitEntry {
+export interface CircuitEntry {
   key: string;
   state: CircuitState;
   failureCount: number;
@@ -138,4 +138,3 @@ export class CircuitBreakerService {
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
   }
 }
-

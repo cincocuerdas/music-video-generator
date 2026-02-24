@@ -11,6 +11,16 @@ const STDERR_LOG = path.join(LOG_DIR, 'backend-throttling.err.log');
 const API_BASE_URL = getApiBaseUrl();
 const HEALTH_URL = `${API_BASE_URL}/health`;
 const POSTGRES_CONTAINER = getPostgresContainerName();
+const TEST_THROTTLING_YOUTUBE_URL =
+  process.env.TEST_THROTTLING_YOUTUBE_URL || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+const TEST_THROTTLING_COMFYUI_URL =
+  process.env.TEST_THROTTLING_COMFYUI_URL ||
+  process.env.COMFYUI_URL ||
+  'http://127.0.0.1:8188';
+const TEST_THROTTLING_GEMINI_KEY =
+  process.env.TEST_THROTTLING_GEMINI_KEY ||
+  process.env.GEMINI_API_KEY ||
+  'test-gemini-key';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -206,8 +216,10 @@ function startBackend() {
       ...process.env,
       ALLOW_DEV_AUTH_BYPASS: process.env.ALLOW_DEV_AUTH_BYPASS || 'true',
       USE_MOCK_PROCESSORS: process.env.USE_MOCK_PROCESSORS || 'true',
-      // Keep throttling test deterministic/fast by skipping external embedding calls
-      GEMINI_API_KEY: process.env.TEST_THROTTLING_GEMINI_KEY || '',
+      IMAGE_PROVIDER: process.env.TEST_THROTTLING_IMAGE_PROVIDER || 'comfyui',
+      LLM_PROVIDER: process.env.TEST_THROTTLING_LLM_PROVIDER || 'gemini',
+      COMFYUI_URL: TEST_THROTTLING_COMFYUI_URL,
+      GEMINI_API_KEY: TEST_THROTTLING_GEMINI_KEY,
     },
   });
 
@@ -286,6 +298,7 @@ async function main() {
       body: JSON.stringify({
         title: `Throttle Seed ${Date.now()}`,
         lyrics: 'seed',
+        youtubeUrl: TEST_THROTTLING_YOUTUBE_URL,
         visualStyle: 'cinematic',
         aspectRatio: '16:9',
       }),
@@ -307,6 +320,7 @@ async function main() {
           body: JSON.stringify({
             title: `Throttle Create ${Date.now()}-${index}`,
             lyrics: 'load',
+            youtubeUrl: TEST_THROTTLING_YOUTUBE_URL,
             visualStyle: 'cinematic',
             aspectRatio: '16:9',
           }),

@@ -11,6 +11,16 @@ const STDERR_LOG = path.join(LOG_DIR, 'backend-pipeline-status.err.log');
 const API_BASE_URL = getApiBaseUrl();
 const HEALTH_URL = `${API_BASE_URL}/health`;
 const POSTGRES_CONTAINER = getPostgresContainerName();
+const TEST_PIPELINE_STATUS_YOUTUBE_URL =
+  process.env.TEST_PIPELINE_STATUS_YOUTUBE_URL || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+const TEST_PIPELINE_STATUS_COMFYUI_URL =
+  process.env.TEST_PIPELINE_STATUS_COMFYUI_URL ||
+  process.env.COMFYUI_URL ||
+  'http://127.0.0.1:8188';
+const TEST_PIPELINE_STATUS_GEMINI_KEY =
+  process.env.TEST_PIPELINE_STATUS_GEMINI_KEY ||
+  process.env.GEMINI_API_KEY ||
+  'test-gemini-key';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,7 +125,10 @@ function startBackend() {
       ...process.env,
       ALLOW_DEV_AUTH_BYPASS: process.env.ALLOW_DEV_AUTH_BYPASS || 'true',
       USE_MOCK_PROCESSORS: process.env.USE_MOCK_PROCESSORS || 'true',
-      GEMINI_API_KEY: process.env.TEST_PIPELINE_STATUS_GEMINI_KEY || '',
+      IMAGE_PROVIDER: process.env.TEST_PIPELINE_STATUS_IMAGE_PROVIDER || 'comfyui',
+      LLM_PROVIDER: process.env.TEST_PIPELINE_STATUS_LLM_PROVIDER || 'gemini',
+      COMFYUI_URL: TEST_PIPELINE_STATUS_COMFYUI_URL,
+      GEMINI_API_KEY: TEST_PIPELINE_STATUS_GEMINI_KEY,
     },
   });
 
@@ -214,6 +227,20 @@ async function setProjectStatus(projectId, status) {
   ]);
 }
 
+async function setProjectAudioUrl(projectId, audioUrl) {
+  await runCommand('docker', [
+    'exec',
+    POSTGRES_CONTAINER,
+    'psql',
+    '-U',
+    'postgres',
+    '-d',
+    'musicvideo',
+    '-c',
+    `UPDATE "Project" SET "audioUrl"='${audioUrl}' WHERE "id"='${projectId}'::uuid;`,
+  ]);
+}
+
 async function createProject(token, title) {
   const project = await apiRequest(`${API_BASE_URL}/projects`, {
     method: 'POST',
@@ -228,6 +255,31 @@ async function createProject(token, title) {
 
   assert(project?.id, 'missing_project_id');
   return project.id;
+}
+
+async function createProjectWithPayload(token, payload) {
+  const project = await apiRequest(`${API_BASE_URL}/projects`, {
+    method: 'POST',
+    headers: buildAuthHeaders(token),
+    body: JSON.stringify(payload),
+  });
+
+  assert(project?.id, 'missing_project_id');
+  return project.id;
+}
+
+async function startPipeline(token, projectId) {
+  return apiRequest(`${API_BASE_URL}/jobs/pipeline/${projectId}/start`, {
+    method: 'POST',
+    headers: buildAuthHeaders(token),
+  });
+}
+
+function assertJobOrder(jobs, expectedOrder, label) {
+  const types = (jobs || []).map((job) => job.type);
+  const actual = types.join(',');
+  const expected = expectedOrder.join(',');
+  assert(actual === expected, `${label}_pipeline_order_mismatch actual=${actual} expected=${expected}`);
 }
 
 async function createJob(token, projectId, type) {
@@ -377,6 +429,51 @@ async function main() {
     assert(token, 'missing_access_token');
 
     await assertDegradedOpsShape();
+
+    // Source routing: lyrics-only should skip download/transcription
+    const lyricsOnlyProjectId = await createProjectWithPayload(token, {
+      title: `Route Lyrics ${Date.now()}`,
+      lyrics: 'manual lyrics route',
+      visualStyle: 'cinematic',
+      aspectRatio: '16:9',
+    });
+    const lyricsJobs = await startPipeline(token, lyricsOnlyProjectId);
+    assertJobOrder(
+      lyricsJobs,
+      ['ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE'],
+      'lyrics_only',
+    );
+    console.log(`case_routing_lyrics=PASS project=${lyricsOnlyProjectId}`);
+
+    // Source routing: audio-only should skip youtube_download but keep transcription
+    const audioOnlyProjectId = await createProjectWithPayload(token, {
+      title: `Route Audio ${Date.now()}`,
+      visualStyle: 'cinematic',
+      aspectRatio: '16:9',
+    });
+    await setProjectAudioUrl(audioOnlyProjectId, '/output/audio/mock-track.wav');
+    const audioJobs = await startPipeline(token, audioOnlyProjectId);
+    assertJobOrder(
+      audioJobs,
+      ['TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE'],
+      'audio_only',
+    );
+    console.log(`case_routing_audio=PASS project=${audioOnlyProjectId}`);
+
+    // Source routing: youtube should keep full pipeline
+    const youtubeProjectId = await createProjectWithPayload(token, {
+      title: `Route Youtube ${Date.now()}`,
+      youtubeUrl: TEST_PIPELINE_STATUS_YOUTUBE_URL,
+      visualStyle: 'cinematic',
+      aspectRatio: '16:9',
+    });
+    const youtubeJobs = await startPipeline(token, youtubeProjectId);
+    assertJobOrder(
+      youtubeJobs,
+      ['YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE'],
+      'youtube_source',
+    );
+    console.log(`case_routing_youtube=PASS project=${youtubeProjectId}`);
 
     // Case 1: degraded
     const degradedProjectId = await createProject(token, `Pipeline Degraded ${Date.now()}`);

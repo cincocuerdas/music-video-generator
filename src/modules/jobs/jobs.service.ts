@@ -60,7 +60,7 @@ interface StyleLoraConfigEntry {
   likesUsed?: number;
 }
 
-const PIPELINE_ORDER: JobType[] = [
+const FULL_PIPELINE_ORDER: JobType[] = [
   JobType.YOUTUBE_DOWNLOAD,
   JobType.TRANSCRIPTION,
   JobType.ANALYZE_LYRICS,
@@ -68,6 +68,20 @@ const PIPELINE_ORDER: JobType[] = [
   JobType.RENDER_VIDEO,
   JobType.FINALIZE,
 ];
+const PIPELINE_JOB_TYPES: JobType[] = [
+  JobType.YOUTUBE_DOWNLOAD,
+  JobType.TRANSCRIPTION,
+  JobType.ANALYZE_LYRICS,
+  JobType.GENERATE_IMAGES,
+  JobType.RENDER_VIDEO,
+  JobType.FINALIZE,
+];
+const PIPELINE_JOB_TYPE_SET = new Set<JobType>(PIPELINE_JOB_TYPES);
+type PipelineSourceMode = 'youtube' | 'audio' | 'lyrics';
+interface PipelineDefinition {
+  source: PipelineSourceMode;
+  order: JobType[];
+}
 
 const RETRY_ENV_CONFIG: Partial<
   Record<JobType, { attemptsEnv: string; attemptsDefault: number; delayEnv: string; delayDefault: number }>
@@ -205,12 +219,46 @@ export class JobsService {
         'Pipeline preflight failed: project has no source input (youtubeUrl/audioUrl/lyrics).',
       );
     }
+  }
 
-    if (!youtubeUrl) {
-      throw new BadRequestException(
-        'Pipeline preflight failed: missing youtubeUrl. This pipeline currently requires YouTube source for download/transcription stages.',
-      );
+  private buildPipelineDefinition(project: {
+    youtubeUrl: string | null;
+    audioUrl: string | null;
+    lyrics: string | null;
+  }): PipelineDefinition {
+    const youtubeUrl = (project.youtubeUrl || '').trim();
+    const audioUrl = (project.audioUrl || '').trim();
+    const lyrics = (project.lyrics || '').trim();
+
+    if (youtubeUrl) {
+      return {
+        source: 'youtube',
+        order: [...FULL_PIPELINE_ORDER],
+      };
     }
+
+    if (audioUrl && !lyrics) {
+      return {
+        source: 'audio',
+        order: [
+          JobType.TRANSCRIPTION,
+          JobType.ANALYZE_LYRICS,
+          JobType.GENERATE_IMAGES,
+          JobType.RENDER_VIDEO,
+          JobType.FINALIZE,
+        ],
+      };
+    }
+
+    return {
+      source: 'lyrics',
+      order: [
+        JobType.ANALYZE_LYRICS,
+        JobType.GENERATE_IMAGES,
+        JobType.RENDER_VIDEO,
+        JobType.FINALIZE,
+      ],
+    };
   }
 
   private async assertProjectOwnership(projectId: string, userId: string): Promise<void> {
@@ -331,7 +379,7 @@ export class JobsService {
       progress: 100,
       outputData,
     });
-    if (PIPELINE_ORDER.includes(completedJob.type)) {
+    if (PIPELINE_JOB_TYPE_SET.has(completedJob.type)) {
       const degradedReasons = extractDegradedReasonsFromOutputData(outputData, completedJob.type);
       const degradedReasonCodes = extractDegradedReasonCodesFromOutputData(
         outputData,
@@ -357,11 +405,11 @@ export class JobsService {
         },
       });
 
-      if (PIPELINE_ORDER.includes(updated.type)) {
+      if (PIPELINE_JOB_TYPE_SET.has(updated.type)) {
         await tx.job.updateMany({
           where: {
             projectId: updated.projectId,
-            type: { in: PIPELINE_ORDER },
+            type: { in: PIPELINE_JOB_TYPES },
             id: { not: updated.id },
             status: { in: [JobStatus.PENDING, JobStatus.PROCESSING] },
           },
@@ -411,11 +459,12 @@ export class JobsService {
 
         this.ensureProviderPreflight();
         this.ensureProjectPreflight(project);
+        const pipelineDefinition = this.buildPipelineDefinition(project);
 
         const existingPipelineJobs = await tx.job.findMany({
           where: {
             projectId,
-            type: { in: PIPELINE_ORDER },
+            type: { in: PIPELINE_JOB_TYPES },
           },
           orderBy: { createdAt: 'asc' },
         });
@@ -449,14 +498,15 @@ export class JobsService {
 
         const createdJobs: Job[] = [];
         const pipelineCorrelationId = `pipeline:${projectId}:${randomUUID().slice(0, 8)}`;
-        for (let i = 0; i < PIPELINE_ORDER.length; i++) {
+        for (let i = 0; i < pipelineDefinition.order.length; i++) {
           const job = await tx.job.create({
             data: {
               projectId,
-              type: PIPELINE_ORDER[i],
+              type: pipelineDefinition.order[i],
               status: JobStatus.PENDING,
               inputData: {
                 correlationId: pipelineCorrelationId,
+                sourceMode: pipelineDefinition.source,
               },
             },
           });
@@ -504,14 +554,25 @@ export class JobsService {
       throw new NotFoundException(`No jobs found for project ${projectId}`);
     }
 
-    const lastCompletedIndex = jobs
-      .filter((job) => job.status === JobStatus.COMPLETED)
-      .map((job) => PIPELINE_ORDER.indexOf(job.type))
-      .reduce((max, idx) => Math.max(max, idx), -1);
+    const pipelineJobs = jobs.filter((job) => PIPELINE_JOB_TYPE_SET.has(job.type));
+    if (pipelineJobs.length === 0) {
+      throw new NotFoundException(`No pipeline jobs found for project ${projectId}`);
+    }
 
-    const nextIndex = lastCompletedIndex + 1;
+    const nextJob = pipelineJobs.find((job) => job.status === JobStatus.PENDING);
+    if (nextJob) {
+      await this.dispatchJob(nextJob);
+      this.logger.log(`Advanced pipeline to ${nextJob.type} for project ${projectId}`);
+      return nextJob;
+    }
 
-    if (nextIndex >= PIPELINE_ORDER.length) {
+    const hasRunning = pipelineJobs.some((job) => job.status === JobStatus.PROCESSING);
+    if (hasRunning) {
+      return null;
+    }
+
+    const allCompleted = pipelineJobs.every((job) => job.status === JobStatus.COMPLETED);
+    if (allCompleted) {
       await this.prisma.project.update({
         where: { id: projectId },
         data: { status: ProjectStatus.COMPLETED },
@@ -520,13 +581,7 @@ export class JobsService {
       return null;
     }
 
-    const nextJob = jobs.find((job) => job.type === PIPELINE_ORDER[nextIndex]);
-
-    if (!nextJob) return null;
-
-    await this.dispatchJob(nextJob);
-    this.logger.log(`Advanced pipeline to ${nextJob.type} for project ${projectId}`);
-    return nextJob;
+    return null;
   }
 
   async getPipelineStatus(projectId: string): Promise<PipelineStatus> {
@@ -542,7 +597,7 @@ export class JobsService {
     });
 
     const currentJob = jobs.find((job) => job.status === JobStatus.PROCESSING);
-    const pipelineJobs = jobs.filter((job) => PIPELINE_ORDER.includes(job.type));
+    const pipelineJobs = jobs.filter((job) => PIPELINE_JOB_TYPE_SET.has(job.type));
     const quality = summarizePipelineQuality(pipelineJobs);
     const normalizedPipelineProgress = pipelineJobs.reduce((sum, job) => {
       if (job.status === JobStatus.COMPLETED) {
@@ -558,8 +613,8 @@ export class JobsService {
     }, 0);
 
     const overallProgress =
-      PIPELINE_ORDER.length > 0
-        ? Math.round(normalizedPipelineProgress / PIPELINE_ORDER.length)
+      pipelineJobs.length > 0
+        ? Math.round(normalizedPipelineProgress / pipelineJobs.length)
         : 0;
 
     return {

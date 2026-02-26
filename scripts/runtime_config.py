@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import os
 from urllib.parse import quote_plus, urlparse
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
 DEFAULT_PLACEHOLDER_BASE_URL = "https://placehold.co"

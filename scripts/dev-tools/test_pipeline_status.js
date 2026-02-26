@@ -367,6 +367,12 @@ async function assertPipelineProjection(token, projectId, expected) {
 }
 
 async function assertDegradedOpsShape() {
+  const ops = await apiRequest(`${API_BASE_URL}/health/ops`, {
+    method: 'GET',
+  });
+  assert(ops?.status === 'ok' || ops?.status === 'degraded', `ops_status_mismatch:${ops?.status}`);
+  assert(Array.isArray(ops?.sourceModeSummary24h), 'ops_sourceModeSummary24h_not_array');
+
   const degradedOps = await apiRequest(`${API_BASE_URL}/health/ops/degraded?hours=24`, {
     method: 'GET',
   });
@@ -376,9 +382,37 @@ async function assertDegradedOpsShape() {
     `degraded_ops_status_mismatch:${degradedOps?.status}`,
   );
   assert(Array.isArray(degradedOps?.byType), 'degraded_ops_byType_not_array');
+  assert(Array.isArray(degradedOps?.bySourceMode), 'degraded_ops_bySourceMode_not_array');
+  assert(Array.isArray(degradedOps?.byTypeAndSource), 'degraded_ops_byTypeAndSource_not_array');
   assert(typeof degradedOps?.windowHours === 'number', 'degraded_ops_windowHours_not_number');
+  assert(degradedOps?.sourceModeFilter === 'all', 'degraded_ops_sourceModeFilter_mismatch');
   assert(degradedOps?.totals && typeof degradedOps.totals === 'object', 'degraded_ops_totals_missing');
   assert(degradedOps?.alerts && typeof degradedOps.alerts === 'object', 'degraded_ops_alerts_missing');
+
+  const degradedOpsLyrics = await apiRequest(
+    `${API_BASE_URL}/health/ops/degraded?hours=24&sourceMode=lyrics`,
+    {
+      method: 'GET',
+    },
+  );
+  assert(
+    degradedOpsLyrics?.sourceModeFilter === 'lyrics',
+    `degraded_ops_filtered_sourceModeFilter_mismatch:${degradedOpsLyrics?.sourceModeFilter}`,
+  );
+  assert(Array.isArray(degradedOpsLyrics?.bySourceMode), 'degraded_ops_filtered_bySourceMode_not_array');
+  assert(
+    (degradedOpsLyrics.bySourceMode || []).every((row) => row?.sourceMode === 'lyrics'),
+    'degraded_ops_filtered_bySourceMode_contains_non_lyrics',
+  );
+
+  const degradedOpsInvalid = await apiRequestRaw(
+    `${API_BASE_URL}/health/ops/degraded?hours=24&sourceMode=invalid-mode`,
+    { method: 'GET' },
+  );
+  assert(
+    degradedOpsInvalid.status === 400,
+    `degraded_ops_invalid_sourceMode_expected_400_got_${degradedOpsInvalid.status}`,
+  );
 
   const realtimeOps = await apiRequest(`${API_BASE_URL}/health/ops/realtime`, {
     method: 'GET',
@@ -394,7 +428,35 @@ async function assertDegradedOpsShape() {
   });
   assert(qualityOps?.status === 'ok', `pipeline_quality_status_mismatch:${qualityOps?.status}`);
   assert(Array.isArray(qualityOps?.byType), 'pipeline_quality_byType_not_array');
+  assert(Array.isArray(qualityOps?.bySourceMode), 'pipeline_quality_bySourceMode_not_array');
+  assert(Array.isArray(qualityOps?.byTypeAndSource), 'pipeline_quality_byTypeAndSource_not_array');
   assert(Array.isArray(qualityOps?.byReasonCode), 'pipeline_quality_byReasonCode_not_array');
+  assert(qualityOps?.sourceModeFilter === 'all', 'pipeline_quality_sourceModeFilter_mismatch');
+
+  const qualityOpsAudio = await apiRequest(
+    `${API_BASE_URL}/health/ops/pipeline-quality?hours=24&sourceMode=audio`,
+    {
+      method: 'GET',
+    },
+  );
+  assert(
+    qualityOpsAudio?.sourceModeFilter === 'audio',
+    `pipeline_quality_filtered_sourceModeFilter_mismatch:${qualityOpsAudio?.sourceModeFilter}`,
+  );
+  assert(Array.isArray(qualityOpsAudio?.bySourceMode), 'pipeline_quality_filtered_bySourceMode_not_array');
+  assert(
+    (qualityOpsAudio.bySourceMode || []).every((row) => row?.sourceMode === 'audio'),
+    'pipeline_quality_filtered_bySourceMode_contains_non_audio',
+  );
+
+  const qualityOpsInvalid = await apiRequestRaw(
+    `${API_BASE_URL}/health/ops/pipeline-quality?hours=24&sourceMode=invalid-mode`,
+    { method: 'GET' },
+  );
+  assert(
+    qualityOpsInvalid.status === 400,
+    `pipeline_quality_invalid_sourceMode_expected_400_got_${qualityOpsInvalid.status}`,
+  );
 }
 
 async function main() {

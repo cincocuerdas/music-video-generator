@@ -42,7 +42,12 @@ jobs:
         run: cp .env.example .env
 
       - name: Install dependencies
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
 
       - name: Run resilience test
         run: npm run test:resilience
@@ -77,7 +82,12 @@ jobs:
         run: cp .env.example .env
 
       - name: Install dependencies
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
 
       - name: Run throttling abuse test
         run: npm run test:throttling

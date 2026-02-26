@@ -6,19 +6,16 @@ Transcribes audio using Whisper and saves to database.
 import sys
 import os
 import json
-from dotenv import load_dotenv
-from ffmpeg_utils import ensure_ffmpeg_on_path
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 # Setup paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 load_dotenv(os.path.join(root_dir, '.env'))
-
-# Ensure ffmpeg can be resolved by Whisper
-ensure_ffmpeg_on_path(root_dir)
-
-# Database connection
-from db_utils import get_db_connection
 
 try:
     from redis_events import emit_progress as emit_redis_progress
@@ -261,6 +258,12 @@ def main():
             }
             emit_result(result)
             return result
+
+        from ffmpeg_utils import ensure_ffmpeg_on_path
+        from db_utils import get_db_connection
+
+        # Ensure ffmpeg can be resolved by Whisper
+        ensure_ffmpeg_on_path(root_dir)
 
         project_id = sys.argv[1]
         emit_progress(project_id, 5, "Initializing transcription module...")

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { JobStatus, JobType } from '@prisma/client';
@@ -45,6 +45,7 @@ interface JobTypeStatsRow {
 
 interface DegradedByTypeRow {
   type: string;
+  sourceMode: string;
   completedTotal: number | bigint | null;
   degradedTotal: number | bigint | null;
   completedWindow: number | bigint | null;
@@ -58,6 +59,8 @@ interface DegradedStageAlert {
   degradedWindow: number;
   completedWindow: number;
 }
+
+type SourceMode = 'youtube' | 'audio' | 'lyrics' | 'unknown';
 
 @Injectable()
 export class HealthService {
@@ -134,6 +137,83 @@ export class HealthService {
       return 24;
     }
     return Math.max(1, Math.min(24 * 30, Math.floor(hours)));
+  }
+
+  private normalizeSourceMode(value: unknown): SourceMode {
+    if (typeof value !== 'string') {
+      return 'unknown';
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'youtube' || normalized === 'audio' || normalized === 'lyrics') {
+      return normalized;
+    }
+    return 'unknown';
+  }
+
+  private inferSourceModeFromProject(project: {
+    sourceMode?: string | null;
+    youtubeUrl?: string | null;
+    audioUrl?: string | null;
+    lyrics?: string | null;
+  } | null | undefined): SourceMode {
+    if (!project) {
+      return 'unknown';
+    }
+    const persistedSourceMode = this.normalizeSourceMode(project.sourceMode);
+    if (persistedSourceMode !== 'unknown') {
+      return persistedSourceMode;
+    }
+    const youtubeUrl = (project.youtubeUrl || '').trim();
+    const audioUrl = (project.audioUrl || '').trim();
+    const lyrics = (project.lyrics || '').trim();
+
+    if (youtubeUrl) {
+      return 'youtube';
+    }
+    if (audioUrl && !lyrics) {
+      return 'audio';
+    }
+    if (lyrics || audioUrl) {
+      return 'lyrics';
+    }
+    return 'unknown';
+  }
+
+  private resolveSourceMode(
+    inputData: unknown,
+    project: {
+      sourceMode?: string | null;
+      youtubeUrl?: string | null;
+      audioUrl?: string | null;
+      lyrics?: string | null;
+    } | null,
+  ): SourceMode {
+    const persistedSourceMode = this.normalizeSourceMode(project?.sourceMode);
+    if (persistedSourceMode !== 'unknown') {
+      return persistedSourceMode;
+    }
+    const payloadSourceMode =
+      inputData && typeof inputData === 'object' && !Array.isArray(inputData)
+        ? (inputData as Record<string, unknown>).sourceMode
+        : null;
+    const normalizedPayloadSource = this.normalizeSourceMode(payloadSourceMode);
+    if (normalizedPayloadSource !== 'unknown') {
+      return normalizedPayloadSource;
+    }
+    return this.inferSourceModeFromProject(project);
+  }
+
+  private parseSourceModeFilter(sourceMode?: string): SourceMode | null {
+    if (typeof sourceMode !== 'string' || sourceMode.trim().length === 0) {
+      return null;
+    }
+    const normalized = sourceMode.trim().toLowerCase();
+    if (normalized === 'youtube' || normalized === 'audio' || normalized === 'lyrics' || normalized === 'unknown') {
+      return normalized;
+    }
+    throw new BadRequestException(
+      `Invalid sourceMode "${sourceMode}". Allowed values: youtube, audio, lyrics, unknown.`,
+    );
   }
 
   private getManagedQueues(): Array<{ key: QueueKey; queue: Queue }> {
@@ -250,25 +330,38 @@ export class HealthService {
     }));
   }
 
-  async getDegradedStageSnapshot(hours = 24): Promise<Record<string, unknown>> {
+  async getDegradedStageSnapshot(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
+    const sourceModeFilter = this.parseSourceModeFilter(sourceMode);
     const rows = await this.prisma.$queryRaw<DegradedByTypeRow[]>`
       WITH core_jobs AS (
         SELECT
-          "type",
-          "status",
-          "updatedAt",
+          j."type",
+          j."status",
+          j."updatedAt",
           CASE
-            WHEN LOWER(COALESCE("outputData"->>'status', '')) = 'degraded' THEN 1
-            WHEN LOWER(COALESCE("outputData"->>'degraded', 'false')) IN ('true', '1', 't', 'yes') THEN 1
+            WHEN LOWER(COALESCE(j."outputData"->>'status', '')) = 'degraded' THEN 1
+            WHEN LOWER(COALESCE(j."outputData"->>'degraded', 'false')) IN ('true', '1', 't', 'yes') THEN 1
             ELSE 0
-          END AS "isDegraded"
-        FROM "Job"
-        WHERE "type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+          END AS "isDegraded",
+          CASE
+            WHEN LOWER(COALESCE(p."sourceMode", '')) IN ('youtube', 'audio', 'lyrics')
+              THEN LOWER(COALESCE(p."sourceMode", ''))
+            WHEN LOWER(COALESCE(j."inputData"->>'sourceMode', '')) IN ('youtube', 'audio', 'lyrics')
+              THEN LOWER(COALESCE(j."inputData"->>'sourceMode', ''))
+            WHEN TRIM(COALESCE(p."youtubeUrl", '')) <> '' THEN 'youtube'
+            WHEN TRIM(COALESCE(p."audioUrl", '')) <> '' AND TRIM(COALESCE(p."lyrics", '')) = '' THEN 'audio'
+            WHEN TRIM(COALESCE(p."lyrics", '')) <> '' OR TRIM(COALESCE(p."audioUrl", '')) <> '' THEN 'lyrics'
+            ELSE 'unknown'
+          END AS "sourceMode"
+        FROM "Job" j
+        LEFT JOIN "Project" p ON p."id" = j."projectId"
+        WHERE j."type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
       )
       SELECT
         "type",
+        "sourceMode",
         COUNT(*) FILTER (WHERE "status" = 'COMPLETED') AS "completedTotal",
         COUNT(*) FILTER (WHERE "status" = 'COMPLETED' AND "isDegraded" = 1) AS "degradedTotal",
         COUNT(*) FILTER (
@@ -281,11 +374,12 @@ export class HealthService {
             AND "isDegraded" = 1
         ) AS "degradedWindow"
       FROM core_jobs
-      GROUP BY "type"
-      ORDER BY "type" ASC
+      WHERE (${sourceModeFilter}::text IS NULL OR "sourceMode" = ${sourceModeFilter}::text)
+      GROUP BY "type", "sourceMode"
+      ORDER BY "type" ASC, "sourceMode" ASC
     `;
 
-    const byType = rows.map((row) => {
+    const byTypeAndSource = rows.map((row) => {
       const completedTotal = this.toNumber(row.completedTotal);
       const degradedTotal = this.toNumber(row.degradedTotal);
       const completedWindow = this.toNumber(row.completedWindow);
@@ -297,6 +391,7 @@ export class HealthService {
 
       return {
         type: row.type,
+        sourceMode: this.normalizeSourceMode(row.sourceMode),
         completedTotal,
         degradedTotal,
         degradedRateTotalPct,
@@ -305,6 +400,91 @@ export class HealthService {
         degradedRateWindowPct,
       };
     });
+
+    const byTypeMap = new Map<
+      string,
+      { completedTotal: number; degradedTotal: number; completedWindow: number; degradedWindow: number }
+    >();
+    const bySourceModeMap = new Map<
+      string,
+      { completedTotal: number; degradedTotal: number; completedWindow: number; degradedWindow: number }
+    >();
+
+    for (const row of byTypeAndSource) {
+      const byType = byTypeMap.get(row.type) || {
+        completedTotal: 0,
+        degradedTotal: 0,
+        completedWindow: 0,
+        degradedWindow: 0,
+      };
+      byType.completedTotal += row.completedTotal;
+      byType.degradedTotal += row.degradedTotal;
+      byType.completedWindow += row.completedWindow;
+      byType.degradedWindow += row.degradedWindow;
+      byTypeMap.set(row.type, byType);
+
+      const bySourceMode = bySourceModeMap.get(row.sourceMode) || {
+        completedTotal: 0,
+        degradedTotal: 0,
+        completedWindow: 0,
+        degradedWindow: 0,
+      };
+      bySourceMode.completedTotal += row.completedTotal;
+      bySourceMode.degradedTotal += row.degradedTotal;
+      bySourceMode.completedWindow += row.completedWindow;
+      bySourceMode.degradedWindow += row.degradedWindow;
+      bySourceModeMap.set(row.sourceMode, bySourceMode);
+    }
+
+    const mapToRateRows = (
+      entries: Array<
+        [string, { completedTotal: number; degradedTotal: number; completedWindow: number; degradedWindow: number }]
+      >,
+      keyName: 'type' | 'sourceMode',
+    ) =>
+      entries.map(([key, value]) => ({
+        [keyName]: key,
+        completedTotal: value.completedTotal,
+        degradedTotal: value.degradedTotal,
+        degradedRateTotalPct:
+          value.completedTotal > 0
+            ? Number(((value.degradedTotal / value.completedTotal) * 100).toFixed(2))
+            : 0,
+        completedWindow: value.completedWindow,
+        degradedWindow: value.degradedWindow,
+        degradedRateWindowPct:
+          value.completedWindow > 0
+            ? Number(((value.degradedWindow / value.completedWindow) * 100).toFixed(2))
+            : 0,
+      }));
+
+    const byType = mapToRateRows(
+      Array.from(byTypeMap.entries()).sort(([a], [b]) => a.localeCompare(b)),
+      'type',
+    ) as Array<{
+      type: string;
+      completedTotal: number;
+      degradedTotal: number;
+      degradedRateTotalPct: number;
+      completedWindow: number;
+      degradedWindow: number;
+      degradedRateWindowPct: number;
+    }>;
+    const sourceSortOrder = ['youtube', 'audio', 'lyrics', 'unknown'];
+    const bySourceMode = mapToRateRows(
+      Array.from(bySourceModeMap.entries()).sort(
+        ([a], [b]) => sourceSortOrder.indexOf(a) - sourceSortOrder.indexOf(b),
+      ),
+      'sourceMode',
+    ) as Array<{
+      sourceMode: string;
+      completedTotal: number;
+      degradedTotal: number;
+      degradedRateTotalPct: number;
+      completedWindow: number;
+      degradedWindow: number;
+      degradedRateWindowPct: number;
+    }>;
 
     const warningThreshold = Math.min(this.degradedWarnPct, this.degradedCriticalPct);
     const criticalThreshold = Math.max(this.degradedWarnPct, this.degradedCriticalPct);
@@ -353,6 +533,7 @@ export class HealthService {
       status: criticalAlerts.length > 0 ? 'degraded' : 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      sourceModeFilter: sourceModeFilter ?? 'all',
       totals: {
         ...totals,
         degradedRateTotalPct:
@@ -375,13 +556,18 @@ export class HealthService {
         hasCriticalAlerts: criticalAlerts.length > 0,
       },
       byType,
+      bySourceMode,
+      byTypeAndSource,
       collectionMs: Date.now() - startedAt,
     };
   }
 
-  async getDegradedStageSnapshotWithAlerts(hours = 24): Promise<Record<string, unknown>> {
-    const snapshot = await this.getDegradedStageSnapshot(hours);
-    await this.healthAlertingService.notifyDegradedStageIfNeeded(snapshot);
+  async getDegradedStageSnapshotWithAlerts(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
+    const snapshot = await this.getDegradedStageSnapshot(hours, sourceMode);
+    // Avoid webhook spam from ad-hoc filtered queries; alerting should run on global snapshot.
+    if (!sourceMode || sourceMode.trim().length === 0) {
+      await this.healthAlertingService.notifyDegradedStageIfNeeded(snapshot);
+    }
     return snapshot;
   }
 
@@ -481,6 +667,12 @@ export class HealthService {
 
     const now = new Date().toISOString();
     const realtimeEvents = this.eventsMetricsService.snapshot();
+    const sourceModeSummary24h =
+      degradedByStage &&
+      typeof degradedByStage === 'object' &&
+      Array.isArray((degradedByStage as Record<string, unknown>).bySourceMode)
+        ? (degradedByStage as Record<string, unknown>).bySourceMode
+        : [];
     return {
       status: errors.length > 0 || hasCriticalDegradedAlerts || hasCriticalLatencyAlerts ? 'degraded' : 'ok',
       timestamp: now,
@@ -490,6 +682,7 @@ export class HealthService {
       queues,
       jobsByType,
       degradedByStage,
+      sourceModeSummary24h,
       latencyAlerts: {
         warningThresholdMs: this.p95WarnMs,
         criticalThresholdMs: this.p95CriticalMs,
@@ -514,10 +707,11 @@ export class HealthService {
     };
   }
 
-  async getPipelineQualitySummary(hours = 24): Promise<Record<string, unknown>> {
+  async getPipelineQualitySummary(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
     const windowStart = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+    const sourceModeFilter = this.parseSourceModeFilter(sourceMode);
 
     const jobs = await this.prisma.job.findMany({
       where: {
@@ -527,6 +721,15 @@ export class HealthService {
       select: {
         type: true,
         outputData: true,
+        inputData: true,
+        project: {
+          select: {
+            sourceMode: true,
+            youtubeUrl: true,
+            audioUrl: true,
+            lyrics: true,
+          },
+        },
       },
     });
 
@@ -536,6 +739,14 @@ export class HealthService {
       string,
       { completedWindow: number; degradedWindow: number }
     >();
+    const bySourceModeAccumulator = new Map<
+      string,
+      { completedWindow: number; degradedWindow: number }
+    >();
+    const byTypeAndSourceAccumulator = new Map<
+      string,
+      { type: string; sourceMode: string; completedWindow: number; degradedWindow: number }
+    >();
     const byReasonAccumulator = new Map<
       string,
       { count: number; jobTypes: Set<string>; sampleReason: string }
@@ -543,14 +754,33 @@ export class HealthService {
 
     for (const job of coreJobs) {
       const jobType = String(job.type);
+      const resolvedSourceMode = this.resolveSourceMode(job.inputData, job.project);
+      if (sourceModeFilter && resolvedSourceMode !== sourceModeFilter) {
+        continue;
+      }
       const byType = byTypeAccumulator.get(jobType) || { completedWindow: 0, degradedWindow: 0 };
       byType.completedWindow += 1;
+      const bySourceMode = bySourceModeAccumulator.get(resolvedSourceMode) || {
+        completedWindow: 0,
+        degradedWindow: 0,
+      };
+      bySourceMode.completedWindow += 1;
+      const byTypeAndSourceKey = `${jobType}:${resolvedSourceMode}`;
+      const byTypeAndSource = byTypeAndSourceAccumulator.get(byTypeAndSourceKey) || {
+        type: jobType,
+        sourceMode: resolvedSourceMode,
+        completedWindow: 0,
+        degradedWindow: 0,
+      };
+      byTypeAndSource.completedWindow += 1;
 
       const reasonCodes = extractDegradedReasonCodesFromOutputData(job.outputData, job.type as JobType);
       const reasons = extractDegradedReasonsFromOutputData(job.outputData, job.type as JobType);
 
       if (reasonCodes.length > 0) {
         byType.degradedWindow += 1;
+        bySourceMode.degradedWindow += 1;
+        byTypeAndSource.degradedWindow += 1;
         reasonCodes.forEach((reasonCode, index) => {
           const existing = byReasonAccumulator.get(reasonCode) || {
             count: 0,
@@ -567,6 +797,8 @@ export class HealthService {
       }
 
       byTypeAccumulator.set(jobType, byType);
+      bySourceModeAccumulator.set(resolvedSourceMode, bySourceMode);
+      byTypeAndSourceAccumulator.set(byTypeAndSourceKey, byTypeAndSource);
     }
 
     const byType = Array.from(byTypeAccumulator.entries())
@@ -580,6 +812,37 @@ export class HealthService {
             : 0,
       }))
       .sort((a, b) => a.type.localeCompare(b.type));
+    const sourceSortOrder = ['youtube', 'audio', 'lyrics', 'unknown'];
+    const bySourceMode = Array.from(bySourceModeAccumulator.entries())
+      .map(([sourceMode, value]) => ({
+        sourceMode,
+        completedWindow: value.completedWindow,
+        degradedWindow: value.degradedWindow,
+        degradedRateWindowPct:
+          value.completedWindow > 0
+            ? Number(((value.degradedWindow / value.completedWindow) * 100).toFixed(2))
+            : 0,
+      }))
+      .sort(
+        (a, b) =>
+          sourceSortOrder.indexOf(a.sourceMode) - sourceSortOrder.indexOf(b.sourceMode),
+      );
+    const byTypeAndSource = Array.from(byTypeAndSourceAccumulator.values())
+      .map((value) => ({
+        type: value.type,
+        sourceMode: value.sourceMode,
+        completedWindow: value.completedWindow,
+        degradedWindow: value.degradedWindow,
+        degradedRateWindowPct:
+          value.completedWindow > 0
+            ? Number(((value.degradedWindow / value.completedWindow) * 100).toFixed(2))
+            : 0,
+      }))
+      .sort(
+        (a, b) =>
+          a.type.localeCompare(b.type) ||
+          sourceSortOrder.indexOf(a.sourceMode) - sourceSortOrder.indexOf(b.sourceMode),
+      );
 
     const byReasonCode = Array.from(byReasonAccumulator.entries())
       .map(([code, value]) => ({
@@ -603,6 +866,7 @@ export class HealthService {
       status: 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      sourceModeFilter: sourceModeFilter ?? 'all',
       totals: {
         ...totals,
         degradedRateWindowPct:
@@ -611,6 +875,8 @@ export class HealthService {
             : 0,
       },
       byType,
+      bySourceMode,
+      byTypeAndSource,
       byReasonCode,
       collectionMs: Date.now() - startedAt,
     };

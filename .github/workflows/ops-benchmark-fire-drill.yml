@@ -29,7 +29,12 @@ jobs:
         run: cp .env.example .env
 
       - name: Install dependencies
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
 
       - name: Run benchmark
         env:
@@ -129,7 +134,12 @@ jobs:
         run: cp .env.example .env
 
       - name: Install dependencies
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
 
       - name: Run fire drill scenarios
         id: fire_drill

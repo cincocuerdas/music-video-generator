@@ -52,7 +52,12 @@ jobs:
         run: cp .env.example .env
 
       - name: Install backend dependencies
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
 
       - name: Build backend
         run: npm run build
@@ -74,6 +79,50 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-gate-logs
+          path: |
+            storage/tmp-tests/*
+            storage/logs/*
+          if-no-files-found: ignore
+
+      - name: Cleanup containers
+        if: always()
+        run: docker compose down -v
+
+  ops-full-suite:
+    name: Full Ops Suite (test:ops)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Install backend dependencies
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Run full ops suite
+        run: npm run test:ops
+
+      - name: Upload full ops logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-ops-suite-logs
           path: |
             storage/tmp-tests/*
             storage/logs/*

@@ -182,6 +182,27 @@ export class JobsService {
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
   }
 
+  private resolveProjectSourceMode(project: {
+    youtubeUrl: string | null;
+    audioUrl: string | null;
+    lyrics: string | null;
+  }): PipelineSourceMode | 'unknown' {
+    const youtubeUrl = (project.youtubeUrl || '').trim();
+    const audioUrl = (project.audioUrl || '').trim();
+    const lyrics = (project.lyrics || '').trim();
+
+    if (youtubeUrl) {
+      return 'youtube';
+    }
+    if (audioUrl && !lyrics) {
+      return 'audio';
+    }
+    if (lyrics || audioUrl) {
+      return 'lyrics';
+    }
+    return 'unknown';
+  }
+
   private ensureProviderPreflight(): void {
     const imageProvider = (process.env.IMAGE_PROVIDER || 'comfyui').trim().toLowerCase();
     const llmProvider = (process.env.LLM_PROVIDER || 'gemini').trim().toLowerCase();
@@ -447,6 +468,7 @@ export class JobsService {
           select: {
             id: true,
             status: true,
+            sourceMode: true,
             youtubeUrl: true,
             audioUrl: true,
             lyrics: true,
@@ -460,6 +482,14 @@ export class JobsService {
         this.ensureProviderPreflight();
         this.ensureProjectPreflight(project);
         const pipelineDefinition = this.buildPipelineDefinition(project);
+        const resolvedProjectSource = this.resolveProjectSourceMode(project);
+
+        if (project.sourceMode !== resolvedProjectSource) {
+          await tx.project.update({
+            where: { id: projectId },
+            data: { sourceMode: resolvedProjectSource },
+          });
+        }
 
         const existingPipelineJobs = await tx.job.findMany({
           where: {

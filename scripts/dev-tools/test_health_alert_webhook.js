@@ -420,6 +420,31 @@ function assertAlertPayloadContract(payload) {
   assert(Array.isArray(payload.alerts.critical), 'alert_critical_array_missing');
   assert(Array.isArray(payload.alerts.warnings), 'alert_warnings_array_missing');
   assert(payload.alerts.critical.length >= 1, 'alert_critical_array_empty');
+  assert(payload.alerts.sourceMode && typeof payload.alerts.sourceMode === 'object', 'alert_sourceMode_missing');
+  assert(
+    isFiniteNumber(payload.alerts.sourceMode.criticalCount),
+    'alert_sourceMode_criticalCount_invalid',
+  );
+  assert(
+    isFiniteNumber(payload.alerts.sourceMode.warningCount),
+    'alert_sourceMode_warningCount_invalid',
+  );
+  assert(
+    Array.isArray(payload.alerts.sourceMode.critical),
+    'alert_sourceMode_critical_array_missing',
+  );
+  assert(
+    Array.isArray(payload.alerts.sourceMode.warnings),
+    'alert_sourceMode_warnings_array_missing',
+  );
+  assert(
+    typeof payload.alerts.hasCriticalSourceModeAlerts === 'boolean',
+    'alert_hasCriticalSourceModeAlerts_missing',
+  );
+  assert(
+    payload.alerts.sourceMode.critical.length >= 1,
+    'alert_sourceMode_critical_array_empty',
+  );
 
   const criticalEntry = payload.alerts.critical[0];
   assert(criticalEntry && typeof criticalEntry === 'object', 'alert_critical_entry_invalid');
@@ -431,6 +456,29 @@ function assertAlertPayloadContract(payload) {
   );
   assert(isFiniteNumber(criticalEntry.degradedWindow), 'alert_critical_entry_degradedWindow_invalid');
   assert(isFiniteNumber(criticalEntry.completedWindow), 'alert_critical_entry_completedWindow_invalid');
+
+  const sourceCriticalEntry = payload.alerts.sourceMode.critical[0];
+  assert(sourceCriticalEntry && typeof sourceCriticalEntry === 'object', 'alert_source_critical_entry_invalid');
+  assert(
+    sourceCriticalEntry.severity === 'critical',
+    'alert_source_critical_entry_severity_mismatch',
+  );
+  assert(
+    typeof sourceCriticalEntry.sourceMode === 'string' && sourceCriticalEntry.sourceMode,
+    'alert_source_critical_entry_sourceMode_missing',
+  );
+  assert(
+    isFiniteNumber(sourceCriticalEntry.degradedRateWindowPct),
+    'alert_source_critical_entry_degradedRateWindowPct_invalid',
+  );
+  assert(
+    isFiniteNumber(sourceCriticalEntry.degradedWindow),
+    'alert_source_critical_entry_degradedWindow_invalid',
+  );
+  assert(
+    isFiniteNumber(sourceCriticalEntry.completedWindow),
+    'alert_source_critical_entry_completedWindow_invalid',
+  );
 
   assert(typeof payload.signature === 'string' && payload.signature.length > 0, 'alert_signature_missing');
   assert(isFiniteNumber(payload.cooldownMs) && payload.cooldownMs > 0, 'alert_cooldownMs_invalid');

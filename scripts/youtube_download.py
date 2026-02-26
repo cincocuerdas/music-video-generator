@@ -12,8 +12,11 @@ import sys
 import urllib.error
 import urllib.request
 
-from dotenv import load_dotenv
-from db_utils import get_db_connection
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 
 # Setup paths
@@ -186,6 +189,10 @@ def main():
             }
             emit_result(result)
             return result
+
+        # Lazy import keeps contract checks fail-safe when script is invoked
+        # without runtime DB dependencies available.
+        from db_utils import get_db_connection
 
         project_id = sys.argv[1]
         conn = get_db_connection()

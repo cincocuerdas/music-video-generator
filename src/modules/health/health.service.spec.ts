@@ -64,13 +64,23 @@ describe('HealthService.getDegradedStageSnapshot', () => {
     prisma.$queryRaw.mockResolvedValue([
       {
         type: 'GENERATE_IMAGES',
-        completedTotal: 20,
-        degradedTotal: 5,
-        completedWindow: 8,
-        degradedWindow: 2,
+        sourceMode: 'youtube',
+        completedTotal: 12,
+        degradedTotal: 3,
+        completedWindow: 4,
+        degradedWindow: 1,
+      },
+      {
+        type: 'GENERATE_IMAGES',
+        sourceMode: 'lyrics',
+        completedTotal: 8,
+        degradedTotal: 2,
+        completedWindow: 4,
+        degradedWindow: 1,
       },
       {
         type: 'RENDER_VIDEO',
+        sourceMode: 'audio',
         completedTotal: 10,
         degradedTotal: 1,
         completedWindow: 5,
@@ -103,6 +113,18 @@ describe('HealthService.getDegradedStageSnapshot', () => {
       degradedRateTotalPct: 25,
       degradedRateWindowPct: 25,
     });
+    expect(Array.isArray(snapshot.bySourceMode)).toBe(true);
+    expect((snapshot.bySourceMode as Array<Record<string, unknown>>)[0]).toMatchObject({
+      sourceMode: 'youtube',
+      completedTotal: 12,
+      degradedTotal: 3,
+    });
+    expect(Array.isArray(snapshot.byTypeAndSource)).toBe(true);
+    expect(
+      (snapshot.byTypeAndSource as Array<Record<string, unknown>>).some(
+        (row) => row.type === 'GENERATE_IMAGES' && row.sourceMode === 'lyrics',
+      ),
+    ).toBe(true);
   });
 
   it('normalizes invalid windows to safe bounds', async () => {
@@ -116,11 +138,24 @@ describe('HealthService.getDegradedStageSnapshot', () => {
     expect(high.windowHours).toBe(24 * 30);
   });
 
+  it('rejects invalid sourceMode filters', async () => {
+    const { service, prisma } = createService();
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    await expect(service.getDegradedStageSnapshot(24, 'bad-source')).rejects.toThrow(
+      'Invalid sourceMode',
+    );
+    await expect(service.getPipelineQualitySummary(24, 'bad-source')).rejects.toThrow(
+      'Invalid sourceMode',
+    );
+  });
+
   it('returns ok when there are no critical degraded alerts', async () => {
     const { service, prisma } = createService();
     prisma.$queryRaw.mockResolvedValue([
       {
         type: 'TRANSCRIPTION',
+        sourceMode: 'audio',
         completedTotal: 50,
         degradedTotal: 2,
         completedWindow: 20,
@@ -147,6 +182,15 @@ describe('HealthService.getDegradedStageSnapshot', () => {
     expect(alertingStub.notifyDegradedStageIfNeeded).toHaveBeenCalledTimes(1);
   });
 
+  it('skips alert notifications for filtered sourceMode degraded snapshots', async () => {
+    const { service, prisma, alertingStub } = createService();
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const snapshot = await service.getDegradedStageSnapshotWithAlerts(24, 'lyrics');
+    expect(snapshot.status).toBe('ok');
+    expect(alertingStub.notifyDegradedStageIfNeeded).not.toHaveBeenCalled();
+  });
+
   it('returns realtime websocket metrics snapshot', () => {
     const { service } = createService();
     const snapshot = service.getRealtimeEventsSnapshot();
@@ -155,11 +199,43 @@ describe('HealthService.getDegradedStageSnapshot', () => {
     expect(snapshot).toHaveProperty('realtimeEvents');
   });
 
+  it('includes sourceModeSummary24h in ops snapshot', async () => {
+    const { service } = createService();
+    jest.spyOn(service as any, 'getManagedQueues').mockReturnValue([]);
+    jest.spyOn(service as any, 'getJobTypeStats').mockResolvedValue([]);
+    jest.spyOn(service, 'getDegradedStageSnapshotWithAlerts').mockResolvedValue({
+      status: 'ok',
+      alerts: { hasCriticalAlerts: false },
+      bySourceMode: [
+        {
+          sourceMode: 'lyrics',
+          completedTotal: 10,
+          degradedTotal: 2,
+          degradedRateTotalPct: 20,
+          completedWindow: 6,
+          degradedWindow: 2,
+          degradedRateWindowPct: 33.33,
+        },
+      ],
+    } as any);
+
+    const snapshot = await service.getOpsSnapshot();
+    expect(snapshot.status).toBe('ok');
+    expect(Array.isArray(snapshot.sourceModeSummary24h)).toBe(true);
+    expect((snapshot.sourceModeSummary24h as Array<Record<string, unknown>>)[0]).toMatchObject({
+      sourceMode: 'lyrics',
+      completedWindow: 6,
+      degradedWindow: 2,
+    });
+  });
+
   it('returns pipeline quality summary grouped by stable reason code', async () => {
     const { service, prisma } = createService();
     prisma.job.findMany.mockResolvedValue([
       {
         type: 'GENERATE_IMAGES',
+        inputData: { sourceMode: 'youtube' },
+        project: { youtubeUrl: 'https://youtube.com/watch?v=abc', audioUrl: null, lyrics: null },
         outputData: {
           status: 'degraded',
           degraded: true,
@@ -168,6 +244,8 @@ describe('HealthService.getDegradedStageSnapshot', () => {
       },
       {
         type: 'RENDER_VIDEO',
+        inputData: { sourceMode: 'lyrics' },
+        project: { youtubeUrl: null, audioUrl: null, lyrics: 'hello' },
         outputData: {
           status: 'degraded',
           message: 'fallback output used',
@@ -175,6 +253,8 @@ describe('HealthService.getDegradedStageSnapshot', () => {
       },
       {
         type: 'YOUTUBE_DOWNLOAD',
+        inputData: { sourceMode: 'youtube' },
+        project: { youtubeUrl: 'https://youtube.com/watch?v=abc', audioUrl: null, lyrics: null },
         outputData: { status: 'success' },
       },
     ]);
@@ -188,8 +268,63 @@ describe('HealthService.getDegradedStageSnapshot', () => {
       },
     });
     expect(summary).toHaveProperty('byType');
+    expect(summary).toHaveProperty('bySourceMode');
+    expect(summary).toHaveProperty('byTypeAndSource');
     expect(summary).toHaveProperty('byReasonCode');
+    const bySourceMode = summary.bySourceMode as Array<Record<string, unknown>>;
+    expect(bySourceMode.some((entry) => entry.sourceMode === 'youtube' && entry.completedWindow === 2)).toBe(
+      true,
+    );
     const byReasonCode = summary.byReasonCode as Array<Record<string, unknown>>;
     expect(byReasonCode.some((entry) => entry.code === 'generate_images.image_generation_empty')).toBe(true);
+  });
+
+  it('filters pipeline quality summary by sourceMode', async () => {
+    const { service, prisma } = createService();
+    prisma.job.findMany.mockResolvedValue([
+      {
+        type: 'GENERATE_IMAGES',
+        inputData: { sourceMode: 'youtube' },
+        project: { youtubeUrl: 'https://youtube.com/watch?v=abc', audioUrl: null, lyrics: null },
+        outputData: {
+          status: 'degraded',
+          degraded: true,
+          degradedReasons: ['image_generation_empty'],
+        },
+      },
+      {
+        type: 'RENDER_VIDEO',
+        inputData: { sourceMode: 'lyrics' },
+        project: { youtubeUrl: null, audioUrl: null, lyrics: 'hello' },
+        outputData: {
+          status: 'degraded',
+          message: 'fallback output used',
+        },
+      },
+    ]);
+
+    const summary = await service.getPipelineQualitySummary(24, 'lyrics');
+    expect(summary).toMatchObject({
+      sourceModeFilter: 'lyrics',
+      totals: {
+        completedWindow: 1,
+        degradedWindow: 1,
+      },
+    });
+    expect(summary.byType).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'RENDER_VIDEO',
+          completedWindow: 1,
+        }),
+      ]),
+    );
+    expect(summary.byType).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'GENERATE_IMAGES',
+        }),
+      ]),
+    );
   });
 });

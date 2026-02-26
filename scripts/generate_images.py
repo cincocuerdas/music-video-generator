@@ -14,8 +14,11 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from dotenv import load_dotenv
-from db_utils import get_db_connection
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 from runtime_config import build_placeholder_image_url, get_comfyui_url
 
 # Import frame exposure decision system
@@ -56,6 +59,11 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 dotenv_path = os.path.join(root_dir, '.env')
 load_dotenv(dotenv_path)
+
+
+def get_db_connection():
+    from db_utils import get_db_connection as _get_db_connection
+    return _get_db_connection()
 
 
 def emit_result(payload):

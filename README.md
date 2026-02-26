@@ -358,10 +358,10 @@ scripts/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/health` | Health check |
-| GET | `/api/v1/health/ops` | Operational metrics (queues, retries, failed/completed stats, latencies) |
-| GET | `/api/v1/health/ops/degraded?hours=24` | Degraded output metrics by pipeline stage (`JobType`) with totals, window stats, and rates |
+| GET | `/api/v1/health/ops` | Operational metrics (queues, retries, failed/completed stats, latencies) + `sourceModeSummary24h` |
+| GET | `/api/v1/health/ops/degraded?hours=24&sourceMode=lyrics` | Degraded output metrics by pipeline stage with optional source filter (`youtube`, `audio`, `lyrics`, `unknown`) |
 | GET | `/api/v1/health/ops/realtime` | Realtime websocket/event metrics snapshot (connections, joins, emits, parse errors) |
-| GET | `/api/v1/health/ops/pipeline-quality?hours=24` | Pipeline quality summary grouped by stable degraded reason codes |
+| GET | `/api/v1/health/ops/pipeline-quality?hours=24&sourceMode=audio` | Pipeline quality summary grouped by stable degraded reason codes with optional source filter |
 | POST | `/api/v1/webhooks/health-alert` | Signed inbound health alert receiver (HMAC + anti-replay) |
 | POST | `/api/v1/auth/dev-token` | Legacy dev access token (non-production only) |
 | POST | `/api/v1/auth/login/dev` | Issue access+refresh tokens (non-production only) |
@@ -375,6 +375,7 @@ scripts/
 ## Operations
 
 - Incident response runbook: `docs/backend-incident-runbook.md`
+- Source mode alert runbook: `docs/source-mode-alert-runbook.md`
 - Backend quality gate setup: `docs/backend-quality-gate.md`
 - Health webhook signing:
   - Sender includes `X-MVG-Webhook-Timestamp` and `X-MVG-Webhook-Signature: sha256=<hex>` when `HEALTH_ALERT_WEBHOOK_SECRET` is configured.

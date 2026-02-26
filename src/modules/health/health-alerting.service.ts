@@ -11,6 +11,17 @@ interface DegradedAlertRow {
   completedWindow: number;
 }
 
+interface DegradedBySourceModeRow {
+  sourceMode: string;
+  degradedRateWindowPct: number;
+  degradedWindow: number;
+  completedWindow: number;
+}
+
+interface DegradedSourceModeAlertRow extends DegradedBySourceModeRow {
+  severity: 'warning' | 'critical';
+}
+
 interface DegradedSnapshotLike {
   status?: string;
   timestamp?: string;
@@ -26,7 +37,11 @@ interface DegradedSnapshotLike {
     hasCriticalAlerts?: boolean;
     criticalCount?: number;
     warningCount?: number;
+    warningThresholdPct?: number;
+    criticalThresholdPct?: number;
+    minCompletedWindow?: number;
   };
+  bySourceMode?: DegradedBySourceModeRow[];
 }
 
 @Injectable()
@@ -60,8 +75,12 @@ export class HealthAlertingService {
     const warnings = Array.isArray(snapshot?.alerts?.warnings)
       ? snapshot.alerts.warnings
       : [];
+    const sourceModeAlerts = this.buildSourceModeAlerts(snapshot);
+    const hasCriticalStageAlerts = critical.length > 0;
+    const hasCriticalSourceModeAlerts = sourceModeAlerts.critical.length > 0;
+    const hasAnyCriticalAlerts = hasCriticalStageAlerts || hasCriticalSourceModeAlerts;
 
-    if (critical.length === 0) {
+    if (!hasAnyCriticalAlerts) {
       if (this.lastCriticalSignature) {
         const recoveryPayload = {
           event: 'pipeline_degraded_recovered',
@@ -77,7 +96,7 @@ export class HealthAlertingService {
       return;
     }
 
-    const signature = this.buildSignature(critical);
+    const signature = this.buildSignature(critical, sourceModeAlerts.critical);
     const now = Date.now();
     const lastSentAt = this.lastSentAtBySignature.get(signature) || 0;
     if (now - lastSentAt < this.cooldownMs) {
@@ -96,6 +115,13 @@ export class HealthAlertingService {
         warningCount: warnings.length,
         critical,
         warnings,
+        sourceMode: {
+          criticalCount: sourceModeAlerts.critical.length,
+          warningCount: sourceModeAlerts.warnings.length,
+          critical: sourceModeAlerts.critical,
+          warnings: sourceModeAlerts.warnings,
+        },
+        hasCriticalSourceModeAlerts,
       },
       signature,
       cooldownMs: this.cooldownMs,
@@ -143,14 +169,70 @@ export class HealthAlertingService {
     }
   }
 
-  private buildSignature(critical: DegradedAlertRow[]): string {
-    return critical
+  private buildSourceModeAlerts(snapshot: DegradedSnapshotLike): {
+    critical: DegradedSourceModeAlertRow[];
+    warnings: DegradedSourceModeAlertRow[];
+  } {
+    const rows = Array.isArray(snapshot?.bySourceMode) ? snapshot.bySourceMode : [];
+    const warningThresholdPct = Number(snapshot?.alerts?.warningThresholdPct ?? 5);
+    const criticalThresholdPct = Number(snapshot?.alerts?.criticalThresholdPct ?? 20);
+    const minCompletedWindow = Number(snapshot?.alerts?.minCompletedWindow ?? 5);
+
+    const critical: DegradedSourceModeAlertRow[] = [];
+    const warnings: DegradedSourceModeAlertRow[] = [];
+
+    for (const row of rows) {
+      const sourceMode = typeof row?.sourceMode === 'string' ? row.sourceMode.trim().toLowerCase() : '';
+      const degradedRateWindowPct = Number(row?.degradedRateWindowPct || 0);
+      const degradedWindow = Number(row?.degradedWindow || 0);
+      const completedWindow = Number(row?.completedWindow || 0);
+
+      if (!sourceMode || !Number.isFinite(completedWindow) || completedWindow < minCompletedWindow) {
+        continue;
+      }
+
+      const entryBase: DegradedBySourceModeRow = {
+        sourceMode,
+        degradedRateWindowPct: Number.isFinite(degradedRateWindowPct) ? degradedRateWindowPct : 0,
+        degradedWindow: Number.isFinite(degradedWindow) ? degradedWindow : 0,
+        completedWindow,
+      };
+
+      if (entryBase.degradedRateWindowPct >= criticalThresholdPct) {
+        critical.push({
+          severity: 'critical',
+          ...entryBase,
+        });
+        continue;
+      }
+      if (entryBase.degradedRateWindowPct >= warningThresholdPct) {
+        warnings.push({
+          severity: 'warning',
+          ...entryBase,
+        });
+      }
+    }
+
+    return { critical, warnings };
+  }
+
+  private buildSignature(
+    criticalByType: DegradedAlertRow[],
+    criticalBySourceMode: DegradedSourceModeAlertRow[],
+  ): string {
+    const stageSignature = criticalByType
       .map(
         (item) =>
-          `${item.type}:${Number(item.degradedRateWindowPct || 0).toFixed(2)}:${item.degradedWindow}/${item.completedWindow}`,
+          `type:${item.type}:${Number(item.degradedRateWindowPct || 0).toFixed(2)}:${item.degradedWindow}/${item.completedWindow}`,
       )
-      .sort()
-      .join('|');
+      .sort();
+    const sourceSignature = criticalBySourceMode
+      .map(
+        (item) =>
+          `source:${item.sourceMode}:${Number(item.degradedRateWindowPct || 0).toFixed(2)}:${item.degradedWindow}/${item.completedWindow}`,
+      )
+      .sort();
+    return [...stageSignature, ...sourceSignature].join('|');
   }
 
   private buildWebhookSignature(payload: string, timestamp: string): string {

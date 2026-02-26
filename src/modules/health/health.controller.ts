@@ -32,15 +32,17 @@ export class HealthController {
   @Throttle(THROTTLE_RULES.healthOpsDegraded)
   async degraded(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+    @Query('sourceMode') sourceMode?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getDegradedStageSnapshotWithAlerts(hours);
+    return this.healthService.getDegradedStageSnapshotWithAlerts(hours, sourceMode);
   }
 
   @Get('ops/pipeline-quality')
   @Throttle(THROTTLE_RULES.healthOpsDegraded)
   async pipelineQuality(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+    @Query('sourceMode') sourceMode?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getPipelineQualitySummary(hours);
+    return this.healthService.getPipelineQualitySummary(hours, sourceMode);
   }
 }

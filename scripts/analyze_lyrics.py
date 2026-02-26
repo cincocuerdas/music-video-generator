@@ -13,8 +13,11 @@ import time
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List
-from dotenv import load_dotenv
-from db_utils import get_db_connection
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 # Import verse classifier
 try:
@@ -38,6 +41,11 @@ TUNED_MODEL_CONFIG_PATH = os.getenv(
     os.path.join(root_dir, "storage", "gemini-tuned-model.json")
 )
 MAX_ANALYSIS_SCENES = int(os.getenv("ANALYSIS_MAX_SCENES", "15"))
+
+
+def get_db_connection():
+    from db_utils import get_db_connection as _get_db_connection
+    return _get_db_connection()
 
 
 def get_gemini_api_base_url() -> str:

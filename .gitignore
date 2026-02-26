@@ -42,6 +42,7 @@ ComfyUI/
 Thumbs.db
 .vscode/
 .idea/
+.plugin-config/
 
 # Local accidental command-shadow files
 nul

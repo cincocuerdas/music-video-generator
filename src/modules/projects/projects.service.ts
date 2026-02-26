@@ -23,6 +23,8 @@ import {
   summarizePipelineQuality,
 } from '../jobs/pipeline-quality.utils';
 
+type ProjectSourceMode = 'youtube' | 'audio' | 'lyrics' | 'unknown';
+
 @Injectable()
 export class ProjectsService implements OnModuleDestroy {
   private readonly logger = new Logger(ProjectsService.name);
@@ -66,6 +68,27 @@ export class ProjectsService implements OnModuleDestroy {
     }
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  }
+
+  private resolveProjectSourceMode(projectLike: {
+    youtubeUrl?: string | null;
+    audioUrl?: string | null;
+    lyrics?: string | null;
+  }): ProjectSourceMode {
+    const youtubeUrl = (projectLike.youtubeUrl || '').trim();
+    const audioUrl = (projectLike.audioUrl || '').trim();
+    const lyrics = (projectLike.lyrics || '').trim();
+
+    if (youtubeUrl) {
+      return 'youtube';
+    }
+    if (audioUrl && !lyrics) {
+      return 'audio';
+    }
+    if (lyrics || audioUrl) {
+      return 'lyrics';
+    }
+    return 'unknown';
   }
 
   constructor(
@@ -123,6 +146,10 @@ export class ProjectsService implements OnModuleDestroy {
         title: createProjectDto.title,
         youtubeUrl: createProjectDto.youtubeUrl,
         lyrics: createProjectDto.lyrics,
+        sourceMode: this.resolveProjectSourceMode({
+          youtubeUrl: createProjectDto.youtubeUrl,
+          lyrics: createProjectDto.lyrics,
+        }),
         visualStyle: createProjectDto.visualStyle,
         colorPalette: createProjectDto.colorPalette ?? [],
         aspectRatio: createProjectDto.aspectRatio ?? '16:9',
@@ -186,7 +213,14 @@ export class ProjectsService implements OnModuleDestroy {
 
     return this.prisma.project.update({
       where: { id },
-      data: updateProjectDto,
+      data: {
+        ...updateProjectDto,
+        sourceMode: this.resolveProjectSourceMode({
+          youtubeUrl: project.youtubeUrl,
+          audioUrl: project.audioUrl,
+          lyrics: updateProjectDto.lyrics ?? project.lyrics,
+        }),
+      },
     });
   }
 
@@ -236,6 +270,11 @@ export class ProjectsService implements OnModuleDestroy {
         where: { id },
         data: {
           youtubeUrl: dto.youtubeUrl,
+          sourceMode: this.resolveProjectSourceMode({
+            youtubeUrl: dto.youtubeUrl,
+            audioUrl: project.audioUrl,
+            lyrics: project.lyrics,
+          }),
           visualStyle: dto.visualStyle || project.visualStyle || 'cinematic',
         },
       });

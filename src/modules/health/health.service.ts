@@ -151,12 +151,17 @@ export class HealthService {
   }
 
   private inferSourceModeFromProject(project: {
+    sourceMode?: string | null;
     youtubeUrl?: string | null;
     audioUrl?: string | null;
     lyrics?: string | null;
   } | null | undefined): SourceMode {
     if (!project) {
       return 'unknown';
+    }
+    const persistedSourceMode = this.normalizeSourceMode(project.sourceMode);
+    if (persistedSourceMode !== 'unknown') {
+      return persistedSourceMode;
     }
     const youtubeUrl = (project.youtubeUrl || '').trim();
     const audioUrl = (project.audioUrl || '').trim();
@@ -176,8 +181,17 @@ export class HealthService {
 
   private resolveSourceMode(
     inputData: unknown,
-    project: { youtubeUrl?: string | null; audioUrl?: string | null; lyrics?: string | null } | null,
+    project: {
+      sourceMode?: string | null;
+      youtubeUrl?: string | null;
+      audioUrl?: string | null;
+      lyrics?: string | null;
+    } | null,
   ): SourceMode {
+    const persistedSourceMode = this.normalizeSourceMode(project?.sourceMode);
+    if (persistedSourceMode !== 'unknown') {
+      return persistedSourceMode;
+    }
     const payloadSourceMode =
       inputData && typeof inputData === 'object' && !Array.isArray(inputData)
         ? (inputData as Record<string, unknown>).sourceMode
@@ -332,6 +346,8 @@ export class HealthService {
             ELSE 0
           END AS "isDegraded",
           CASE
+            WHEN LOWER(COALESCE(p."sourceMode", '')) IN ('youtube', 'audio', 'lyrics')
+              THEN LOWER(COALESCE(p."sourceMode", ''))
             WHEN LOWER(COALESCE(j."inputData"->>'sourceMode', '')) IN ('youtube', 'audio', 'lyrics')
               THEN LOWER(COALESCE(j."inputData"->>'sourceMode', ''))
             WHEN TRIM(COALESCE(p."youtubeUrl", '')) <> '' THEN 'youtube'
@@ -708,6 +724,7 @@ export class HealthService {
         inputData: true,
         project: {
           select: {
+            sourceMode: true,
             youtubeUrl: true,
             audioUrl: true,
             lyrics: true,

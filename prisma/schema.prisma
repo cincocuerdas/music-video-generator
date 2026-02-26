@@ -22,6 +22,7 @@ model Project {
   userId         String               @db.Uuid
   title          String               @db.VarChar(200)
   status         ProjectStatus        @default(DRAFT)
+  sourceMode     String?              @db.VarChar(20)
   lyrics         String?
   audioUrl       String?              @db.VarChar(500)
   audioDuration  Int?
@@ -39,6 +40,7 @@ model Project {
   user           User                 @relation(fields: [userId], references: [id])
 
   @@index([userId, status, createdAt(sort: Desc)])
+  @@index([sourceMode])
 }
 
 model GenerationFeedback {

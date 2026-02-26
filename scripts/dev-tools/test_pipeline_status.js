@@ -268,6 +268,13 @@ async function createProjectWithPayload(token, payload) {
   return project.id;
 }
 
+async function getProject(token, projectId) {
+  return apiRequest(`${API_BASE_URL}/projects/${projectId}`, {
+    method: 'GET',
+    headers: buildAuthHeaders(token),
+  });
+}
+
 async function startPipeline(token, projectId) {
   return apiRequest(`${API_BASE_URL}/jobs/pipeline/${projectId}/start`, {
     method: 'POST',
@@ -505,6 +512,8 @@ async function main() {
       ['ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE'],
       'lyrics_only',
     );
+    const lyricsProject = await getProject(token, lyricsOnlyProjectId);
+    assert(lyricsProject?.sourceMode === 'lyrics', `lyrics_sourceMode_mismatch:${lyricsProject?.sourceMode}`);
     console.log(`case_routing_lyrics=PASS project=${lyricsOnlyProjectId}`);
 
     // Source routing: audio-only should skip youtube_download but keep transcription
@@ -520,6 +529,8 @@ async function main() {
       ['TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE'],
       'audio_only',
     );
+    const audioProject = await getProject(token, audioOnlyProjectId);
+    assert(audioProject?.sourceMode === 'audio', `audio_sourceMode_mismatch:${audioProject?.sourceMode}`);
     console.log(`case_routing_audio=PASS project=${audioOnlyProjectId}`);
 
     // Source routing: youtube should keep full pipeline
@@ -535,6 +546,8 @@ async function main() {
       ['YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE'],
       'youtube_source',
     );
+    const youtubeProject = await getProject(token, youtubeProjectId);
+    assert(youtubeProject?.sourceMode === 'youtube', `youtube_sourceMode_mismatch:${youtubeProject?.sourceMode}`);
     console.log(`case_routing_youtube=PASS project=${youtubeProjectId}`);
 
     // Case 1: degraded

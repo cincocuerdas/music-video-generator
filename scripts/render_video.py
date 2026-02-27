@@ -98,6 +98,8 @@ def build_safe_render_result(
     frames_used: int = 0,
     file_size: int = 0,
     warning: str = "",
+    error_code: str = "",
+    degraded_reasons=None,
 ) -> dict:
     output_filename = f"{project_id}.mp4" if project_id else "fallback.mp4"
     video_url = f"/output/videos/{output_filename}"
@@ -110,6 +112,7 @@ def build_safe_render_result(
         "success": status != "failed",
         "mode": mode,
         "degraded": degraded,
+        "degradedReasons": degraded_reasons if isinstance(degraded_reasons, list) else ([] if not degraded else ([error_code] if error_code else [])),
         "message": message,
         "videoUrl": video_url,
         "outputPath": output_path or "(fallback/no-file)",
@@ -118,6 +121,8 @@ def build_safe_render_result(
         "fileSize": file_size,
         "framesUsed": frames_used,
     }
+    if status == "failed":
+        result["errorCode"] = error_code or "render_video.failed"
     if warning:
         result["warning"] = warning
     return result
@@ -238,6 +243,15 @@ def get_aspect_dimensions(aspect_ratio: str) -> tuple:
         "4:3": (1440, 1080),
     }
     return ratios.get(aspect_ratio, (1920, 1080))
+
+def read_unexposed_fallback_threshold() -> float:
+    """Read ratio threshold to relax exposed=false filtering when too many frames are blocked."""
+    raw_value = os.getenv("RENDER_UNEXPOSED_FALLBACK_THRESHOLD", "0.4")
+    try:
+        threshold = float(raw_value)
+    except (TypeError, ValueError):
+        threshold = 0.4
+    return max(0.0, min(1.0, threshold))
 
 def render_video(project_id: str, song_path: str = None, analysis_data: dict = None):
     """
@@ -375,35 +389,84 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
             
             # Get local cache mapping for this project
             cache_mapping = get_image_files(project_id)
+            total_scene_count = max(len(scenes), len(generated_images))
+            post_verse_scene_count = max(total_scene_count - first_real_verse_idx, 0)
+            unexposed_scene_count = 0
+            unexposed_ratio_threshold = read_unexposed_fallback_threshold()
 
             # Fallback strategy:
             # If ALL post-verse scenes were marked exposed=false, render successful scenes anyway.
+            # Also relax the gate when exposed=false dominates the timeline (prevents "frozen" videos).
             # This avoids videos made entirely from continuity fills when casting gate is too strict.
             has_exposed_post_verse = False
             for idx, img_data in enumerate(generated_images):
                 if idx < first_real_verse_idx:
                     continue
                 if img_data.get("exposed") is False:
+                    unexposed_scene_count += 1
                     continue
                 if img_data.get("status") == "success" or idx in cache_mapping:
                     has_exposed_post_verse = True
                     break
-            allow_unexposed_fallback = not has_exposed_post_verse
+
+            unexposed_ratio = (
+                (unexposed_scene_count / post_verse_scene_count)
+                if post_verse_scene_count > 0
+                else 0.0
+            )
+            allow_unexposed_fallback = (
+                (not has_exposed_post_verse)
+                or (unexposed_ratio >= unexposed_ratio_threshold)
+            )
             if allow_unexposed_fallback:
-                print(
-                    "No exposed scenes after first verse. Enabling fallback render for successful unexposed scenes.",
-                    file=sys.stderr
-                )
+                if not has_exposed_post_verse:
+                    print(
+                        "No exposed scenes after first verse. Enabling fallback render for successful unexposed scenes.",
+                        file=sys.stderr
+                    )
+                else:
+                    print(
+                        (
+                            "High unexposed ratio detected "
+                            f"({unexposed_scene_count}/{post_verse_scene_count}={unexposed_ratio:.0%}, "
+                            f"threshold={unexposed_ratio_threshold:.0%}). "
+                            "Enabling fallback render for successful unexposed scenes."
+                        ),
+                        file=sys.stderr
+                    )
             
             # Download/Collect scene images.
             # Keep full timeline length: if a scene is not renderable, duplicate the last valid frame.
             skipped_count = first_real_verse_idx
             skipped_quality_count = 0
             skipped_missing_count = 0
+            diversity_fill_count = 0
             continuity_fill_count = 0
             last_valid_frame_path = image_files[-1]["path"] if image_files else None
+            fallback_pool_paths = []
+            fallback_pool_cursor = 0
+            last_fallback_source = None
 
-            total_scene_count = max(len(scenes), len(generated_images))
+            for _, cached_path in sorted(cache_mapping.items(), key=lambda kv: kv[0]):
+                if cached_path and os.path.exists(cached_path) and cached_path not in fallback_pool_paths:
+                    fallback_pool_paths.append(cached_path)
+
+            def pick_fallback_source():
+                nonlocal fallback_pool_cursor, last_fallback_source
+                if not fallback_pool_paths:
+                    return None
+                pool_len = len(fallback_pool_paths)
+                for _ in range(pool_len):
+                    candidate = fallback_pool_paths[fallback_pool_cursor % pool_len]
+                    fallback_pool_cursor += 1
+                    if pool_len == 1 or candidate != last_fallback_source:
+                        last_fallback_source = candidate
+                        return candidate
+                candidate = fallback_pool_paths[fallback_pool_cursor % pool_len]
+                fallback_pool_cursor += 1
+                last_fallback_source = candidate
+                return candidate
+
             for i in range(first_real_verse_idx, total_scene_count):
                 img_data = generated_images[i] if i < len(generated_images) else {}
 
@@ -436,22 +499,39 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                                 "index": image_index
                             })
                             last_valid_frame_path = image_path
+                            if image_path not in fallback_pool_paths:
+                                fallback_pool_paths.append(image_path)
                             image_index += 1
                             rendered_scene = True
                     else:
                         skipped_missing_count += 1
 
-                # Continuity fallback: preserve duration with last valid frame
-                if not rendered_scene and last_valid_frame_path and os.path.exists(last_valid_frame_path):
+                # Diversity fallback: preserve duration using rotating valid frames.
+                # If pool is unavailable, fallback to last valid frame as final guard.
+                if not rendered_scene:
+                    fill_source = pick_fallback_source()
+                    if not fill_source or not os.path.exists(fill_source):
+                        fill_source = last_valid_frame_path
+
+                    if not fill_source or not os.path.exists(fill_source):
+                        continue
+
+                    used_continuity_source = (
+                        last_valid_frame_path is not None and fill_source == last_valid_frame_path
+                    )
                     fill_path = os.path.join(render_temp, f"image_{image_index:03d}.png")
-                    shutil.copy(last_valid_frame_path, fill_path)
+                    shutil.copy(fill_source, fill_path)
                     image_files.append({
                         "path": fill_path,
                         "duration": duration,
                         "index": image_index
                     })
+                    last_valid_frame_path = fill_path
                     image_index += 1
-                    continuity_fill_count += 1
+                    if used_continuity_source:
+                        continuity_fill_count += 1
+                    else:
+                        diversity_fill_count += 1
 
             if skipped_count > 0:
                 print(f"Skipped {skipped_count} pre-verse images (covered by thumbnail intro)", file=sys.stderr)
@@ -459,6 +539,8 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                 print(f"Skipped {skipped_quality_count} low-quality images (exposed=false)", file=sys.stderr)
             if skipped_missing_count > 0:
                 print(f"Skipped {skipped_missing_count} missing/failed scene images", file=sys.stderr)
+            if diversity_fill_count > 0:
+                print(f"Filled {diversity_fill_count} scene slots with diversity fallback frames", file=sys.stderr)
             if continuity_fill_count > 0:
                 print(f"Filled {continuity_fill_count} scene slots with continuity frames", file=sys.stderr)
 
@@ -472,6 +554,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     resolution=f"{width}x{height}",
                     frames_used=0,
                     duration=0,
+                    error_code="render_video.no_images",
                 )
                 emit_result(fallback)
                 return fallback
@@ -499,6 +582,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     frames_used=len(image_files),
                     file_size=0,
                     warning=save_warning,
+                    error_code="render_video.ffmpeg_unavailable",
                 )
                 emit_result(result)
                 return result
@@ -618,6 +702,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     frames_used=len(image_files),
                     file_size=0,
                     warning=f"FFmpeg failed: {error_tail[:800]}",
+                    error_code="render_video.ffmpeg_failed",
                 )
                 emit_result(result)
                 return result
@@ -643,8 +728,11 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                 "fileSize": file_size,
                 "framesUsed": len(image_files),
                 "degraded": degraded,
+                "degradedReasons": ["render_video.db_save_warning"] if degraded else [],
                 "warning": save_warning if save_warning else None,
             }
+            if not useful_output:
+                result["errorCode"] = "render_video.no_output_file"
 
             emit_result(result)
             return result
@@ -661,6 +749,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
             useful_output=False,
             message="Unhandled render exception; returning safe fallback metadata.",
             warning=f"{type(e).__name__}: {str(e)}",
+            error_code="render_video.exception",
         )
         emit_result(fallback)
         return fallback
@@ -675,6 +764,7 @@ if __name__ == "__main__":
                 useful_output=False,
                 message="Missing arguments. Returning safe fallback output.",
                 warning="Usage: python render_video.py <project_id> [audio_path] [json_file_or_string]",
+                error_code="render_video.missing_arguments",
             ),
         )
         sys.exit(0)

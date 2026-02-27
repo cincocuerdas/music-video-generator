@@ -3,13 +3,14 @@
 """
 Generate Images Script
 Reads analysis result from database and generates images.
-Supports multiple providers: Pollinations (free), Replicate (paid).
+Supports multiple providers: Pollinations (free), Replicate (paid), ComfyUI (local), Gemini image models.
 """
 import sys
 import json
 import os
 import time
 import re
+import base64
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -67,9 +68,165 @@ def get_db_connection():
 
 
 def emit_result(payload):
+    if not isinstance(payload, dict):
+        payload = {
+            "status": "failed",
+            "success": False,
+            "degraded": False,
+            "degradedReasons": ["image_generation.invalid_payload"],
+            "errorCode": "image_generation.invalid_payload",
+            "message": "Invalid result payload",
+        }
+    else:
+        normalized = dict(payload)
+        raw_status = str(normalized.get("status") or "").strip().lower()
+
+        if raw_status not in {"success", "degraded", "failed"}:
+            if isinstance(normalized.get("success"), bool):
+                raw_status = "success" if normalized["success"] else "failed"
+            else:
+                raw_status = "success"
+            normalized["status"] = raw_status
+
+        if not isinstance(normalized.get("success"), bool):
+            normalized["success"] = raw_status != "failed"
+
+        if not isinstance(normalized.get("degraded"), bool):
+            normalized["degraded"] = raw_status == "degraded"
+
+        degraded_reasons = normalized.get("degradedReasons")
+        if isinstance(degraded_reasons, list):
+            normalized["degradedReasons"] = [
+                str(reason).strip()
+                for reason in degraded_reasons
+                if str(reason).strip()
+            ]
+        elif isinstance(degraded_reasons, str):
+            cleaned = degraded_reasons.strip()
+            normalized["degradedReasons"] = [cleaned] if cleaned else []
+        else:
+            normalized["degradedReasons"] = []
+
+        if normalized["degraded"] and not normalized["degradedReasons"]:
+            normalized["degradedReasons"] = ["image_generation.degraded"]
+
+        if (raw_status == "failed" or normalized["success"] is False) and not str(
+            normalized.get("errorCode") or ""
+        ).strip():
+            normalized["errorCode"] = "image_generation.failed"
+
+        payload = normalized
+
     output = json.dumps(payload, ensure_ascii=False)
     print(output)
     print(f"RESULT_JSON:{output}", file=sys.stderr)
+
+
+def parse_bool_env(name: str, default: bool = False) -> bool:
+    value = (os.getenv(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
+def parse_int_env(name: str, fallback: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except Exception:
+        return fallback
+
+
+def resolve_hand_lora_mode() -> str:
+    """
+    Returns one of: off | auto | always
+    - auto: enable only in risk scenes (default)
+    - always: enable for every compatible people scene
+    - off: disable completely
+    """
+    raw = (os.getenv("COMFYUI_HAND_LORA_MODE") or "").strip().lower()
+    if raw in {"off", "auto", "always"}:
+        return raw
+
+    # Backward compatibility with previous flag.
+    if parse_bool_env("COMFYUI_DISABLE_HAND_LORA", False):
+        return "off"
+
+    return "auto"
+
+
+def get_gemini_api_base_url() -> str:
+    value = (os.getenv("GEMINI_API_BASE_URL") or "").strip()
+    if not value:
+        return "https://generativelanguage.googleapis.com"
+    return value.rstrip("/")
+
+
+def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
+    text = f"{prompt or ''} {verse_type or ''}".lower()
+    text_keywords = [
+        "text", "lettering", "typography", "sign", "billboard", "label", "packaging",
+        "product shelf", "supermarket", "store aisle", "menu board", "price tag",
+        "cartel", "etiqueta", "pasillo", "productos", "letrero", "marca",
+    ]
+    crowd_keywords = [
+        "crowd", "massive crowd", "huge crowd", "many people", "packed", "audience",
+        "protest", "festival", "stadium", "parade", "busy street", "multitude",
+        "multitud", "mucha gente",
+    ]
+    action_keywords = [
+        "running", "jumping", "fighting", "boxing", "skateboarding", "surfing",
+        "swimming", "underwater", "sprinting", "dancing", "parkour", "explosion",
+        "chasing", "action shot", "dynamic motion", "race", "sports", "combat",
+        "nadando", "corriendo", "saltando", "deporte", "accion",
+    ]
+
+    has_text_heavy = any(keyword in text for keyword in text_keywords)
+    has_crowd = any(keyword in text for keyword in crowd_keywords)
+    has_action = any(keyword in text for keyword in action_keywords)
+    if isinstance(verse_type, str) and verse_type.strip().upper() == "RHYTHMIC":
+        has_action = True
+
+    return {
+        "textHeavy": has_text_heavy,
+        "crowd": has_crowd,
+        "action": has_action,
+    }
+
+
+def scene_likely_has_people(prompt: str, verse_type: str = None) -> bool:
+    text = f"{prompt or ''} {verse_type or ''}".lower()
+    people_keywords = [
+        "solo", "1girl", "1boy", "person", "people", "man", "woman",
+        "boy", "girl", "child", "children", "kids", "family", "friends",
+        "group", "couple", "portrait", "face", "human", "community",
+    ]
+    return any(keyword in text for keyword in people_keywords)
+
+
+def should_route_to_gemini(base_provider: str, prompt: str, verse_type: str = None) -> tuple[bool, str]:
+    if base_provider not in {"comfyui", "pollinations", "replicate"}:
+        return False, ""
+    if not parse_bool_env("GEMINI_SMART_ROUTING_ENABLED", True):
+        return False, ""
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return False, ""
+
+    traits = detect_scene_traits(prompt, verse_type)
+    reasons = []
+    if traits["textHeavy"]:
+        reasons.append("text")
+    if traits["crowd"]:
+        reasons.append("crowd")
+    if traits["action"]:
+        reasons.append("action")
+
+    if not reasons:
+        return False, ""
+    return True, ",".join(reasons)
 
 # Output directory for generated images
 OUTPUT_DIR = os.path.join(root_dir, 'output', 'images')
@@ -301,6 +458,81 @@ def generate_with_replicate(prompt: str, style: str = None, api_token: str = Non
                 raise Exception(f"Unknown status: {status}")
 
     raise Exception("Prediction timed out")
+
+
+def generate_with_gemini_image(
+    prompt: str,
+    style: str = None,
+    width: int = 1280,
+    height: int = 720,
+    scene_index: int = 0,
+    project_id: str = "",
+) -> str:
+    """
+    Generate image with Gemini image models (Nano Banana family).
+    Uses Gemini Pro image model by default for complex text/crowd/action prompts.
+    """
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        raise Exception("GEMINI_API_KEY not provided")
+
+    model = (os.getenv("GEMINI_IMAGE_MODEL") or "gemini-3-pro-image-preview").strip()
+    base_url = get_gemini_api_base_url()
+
+    style_hint = f"{style} style" if style else "cinematic style"
+    ratio_hint = f"{width}:{height}"
+    instruction = (
+        "Photorealistic image. Preserve readable text/logos exactly when requested. "
+        "Maintain coherent anatomy for multi-person scenes and dynamic motion when action is requested."
+    )
+    full_prompt = f"{prompt}, {style_hint}, aspect ratio {ratio_hint}. {instruction}"
+
+    endpoint = f"{base_url}/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": full_prompt}]}],
+        "generationConfig": {"responseModalities": ["IMAGE"]},
+    }
+
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=120) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    inline_data = None
+    for candidate in data.get("candidates", []):
+        content = candidate.get("content", {}) or {}
+        for part in content.get("parts", []) or []:
+            maybe_inline = part.get("inlineData")
+            if maybe_inline and maybe_inline.get("data"):
+                inline_data = maybe_inline
+                break
+        if inline_data:
+            break
+
+    if not inline_data:
+        raise Exception("Gemini did not return inline image data")
+
+    image_bytes = base64.b64decode(inline_data["data"])
+    mime_type = (inline_data.get("mimeType") or "image/png").lower()
+    extension = ".png"
+    if "jpeg" in mime_type or "jpg" in mime_type:
+        extension = ".jpg"
+    elif "webp" in mime_type:
+        extension = ".webp"
+
+    cache_dir = os.path.join(OUTPUT_DIR, "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    project_key = re.sub(r"[^a-zA-Z0-9_-]+", "", project_id or "default")
+    local_path = os.path.join(cache_dir, f"project_{project_key}_gemini_scene_{scene_index}{extension}")
+    with open(local_path, "wb") as f:
+        f.write(image_bytes)
+
+    return local_path
 
 def generate_with_pollinations(prompt: str, style: str = None, width: int = 1024, height: int = 1024, scene_index: int = 0) -> str:
     """
@@ -687,6 +919,11 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
             negative_prompt += f", {negative_boost}"
             print(f"  🧠 AI Negative Boost: {negative_boost}", file=sys.stderr)
 
+    # Detect scene traits to adapt constraints.
+    # Some constraints (like banning text) hurt product/signage scenes.
+    scene_traits = detect_scene_traits(prompt, verse_type)
+    is_text_heavy_scene = bool(scene_traits.get("textHeavy"))
+
     # Detect scenes with multiple people and add stronger anatomical guidance.
     # Group scenes are statistically more prone to eye/face/hand artifacts.
     people_text = f"{prompt} {full_prompt}".lower()
@@ -696,17 +933,23 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
         "children", "kids", "people cheering", "protest"
     ]
     is_multi_person_scene = any(kw in people_text for kw in multi_person_keywords)
+    apply_crowd_clamp = parse_bool_env("COMFYUI_CROWD_CLAMP_ENABLED", False)
 
     if is_multi_person_scene and style_norm not in ['anime', 'ui design', 'stitch']:
-        # Keep composition manageable for realism (unless explicitly massive event).
-        full_prompt = re.sub(r"\bmassive crowd\b", "small group of people", full_prompt, flags=re.IGNORECASE)
-        full_prompt = re.sub(r"\bhuge crowd\b", "small group of people", full_prompt, flags=re.IGNORECASE)
-
-        quality_suffix += (
-            ", small group composition, 2 to 4 people maximum, all foreground faces visible and sharp, "
-            "realistic eyes, natural facial symmetry, hands naturally positioned according to the action, "
-            "no staged hand pose, no hand close-up unless the lyric explicitly requires it"
-        )
+        if apply_crowd_clamp:
+            # Optional safeguard for lower-end models.
+            full_prompt = re.sub(r"\bmassive crowd\b", "small group of people", full_prompt, flags=re.IGNORECASE)
+            full_prompt = re.sub(r"\bhuge crowd\b", "small group of people", full_prompt, flags=re.IGNORECASE)
+            quality_suffix += (
+                ", small group composition, 2 to 4 people maximum, all foreground faces visible and sharp, "
+                "realistic eyes, natural facial symmetry, hands naturally positioned according to the action, "
+                "no staged hand pose, no hand close-up unless the lyric explicitly requires it"
+            )
+        else:
+            quality_suffix += (
+                ", coherent crowd composition, preserve visible identities in foreground, "
+                "realistic eyes and facial symmetry, natural hand positioning"
+            )
         negative_prompt += (
             ", giant crowd, tiny distant faces, face blur, deformed face, malformed face, asymmetrical face, "
             "distorted eyes, fused fingers, joined fingers, hand merged with arm, arm merged with torso, "
@@ -722,6 +965,15 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
             cfg = max(cfg, 5.2)
             if steps != old_steps or cfg != old_cfg:
                 print(f"  👥 Multi-person boost: steps {old_steps}->{steps}, cfg {old_cfg}->{cfg}", file=sys.stderr)
+
+    # IMPORTANT: for product/signage scenes, do not ban text in negatives.
+    if is_text_heavy_scene:
+        cleaned_negative = re.sub(r"\btext\b,?\s*", "", negative_prompt, flags=re.IGNORECASE)
+        cleaned_negative = re.sub(r",\s*,", ", ", cleaned_negative)
+        cleaned_negative = cleaned_negative.strip(" ,")
+        if cleaned_negative:
+            negative_prompt = cleaned_negative
+        print("  🏷️ Text-heavy scene: removed 'text' token from negative prompt", file=sys.stderr)
 
     max_steps_env = os.getenv("COMFYUI_MAX_STEPS")
     if max_steps_env:
@@ -769,14 +1021,21 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
     ]
     lora_context = f"{prompt} {full_prompt}".lower()
     is_hand_action_scene = any(kw in lora_context for kw in hand_action_keywords)
+    has_people_scene = scene_likely_has_people(lora_context, verse_type)
     style_supports_lora = style_norm in ['realistic', 'cinematic', 'hyper', 'hyper realistic', 'photorealistic', '']
-    force_disable_hand_lora = os.getenv("COMFYUI_DISABLE_HAND_LORA", "false").lower() == "true"
-    use_hand_lora = (
-        (not force_disable_hand_lora) and
-        os.path.exists(lora_path) and
-        style_supports_lora and
-        (is_multi_person_scene or is_hand_action_scene)
-    )
+    hand_lora_mode = resolve_hand_lora_mode()
+    hand_lora_file_exists = os.path.exists(lora_path)
+
+    should_enable_by_mode = False
+    if hand_lora_mode == "always":
+        # "always" means always for compatible scenes with people.
+        should_enable_by_mode = has_people_scene
+    elif hand_lora_mode == "auto":
+        should_enable_by_mode = is_multi_person_scene or is_hand_action_scene
+    else:  # off
+        should_enable_by_mode = False
+
+    use_hand_lora = hand_lora_file_exists and style_supports_lora and should_enable_by_mode and hand_lora_mode != "off"
 
     lora_strength_model = 0.75
     lora_strength_clip = 0.45
@@ -785,14 +1044,16 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
         lora_strength_clip = 0.85
 
     if use_hand_lora:
-        context_tag = "HAND_ACTION" if is_hand_action_scene else "MULTI_PERSON"
+        context_tag = "HAND_ACTION" if is_hand_action_scene else ("MULTI_PERSON" if is_multi_person_scene else "PEOPLE")
         print(
-            f"  🖐️ Hand LoRA Active: {lora_filename} ({context_tag}, "
+            f"  🖐️ Hand LoRA Active [{hand_lora_mode}]: {lora_filename} ({context_tag}, "
             f"model={lora_strength_model}, clip={lora_strength_clip})",
             file=sys.stderr
         )
     else:
-        if not os.path.exists(lora_path):
+        if hand_lora_mode == "off":
+            print("  ℹ️ Hand LoRA disabled via COMFYUI_HAND_LORA_MODE=off", file=sys.stderr)
+        elif not hand_lora_file_exists:
             print(f"  ⚠️ Hand LoRA not found: {lora_filename}", file=sys.stderr)
         elif not style_supports_lora:
             print(f"  ⚠️ Hand LoRA disabled for style: {style_norm}", file=sys.stderr)
@@ -1153,6 +1414,7 @@ def resolve_generation_concurrency(provider: str, total_scenes: int) -> int:
         "comfyui": 4,
         "pollinations": 4,
         "replicate": 3,
+        "gemini": 2,
         "artic": 4,
         "picsum": 6,
         "mock": 8,
@@ -1187,15 +1449,70 @@ def generate_scene_asset(
     scene_generation_error = None
 
     try:
-        if provider == "mock":
+        selected_provider = provider
+        routing_reason = ""
+        should_use_gemini, routing_reason = should_route_to_gemini(provider, prompt, scene_verse_type)
+        if provider != "gemini" and should_use_gemini:
+            selected_provider = "gemini"
+            print(
+                f"  🧠 Smart routing scene {scene_index}: {provider} -> gemini "
+                f"(reason={routing_reason})",
+                file=sys.stderr,
+            )
+
+        if selected_provider == "mock":
             image_url = generate_mock_image(prompt, scene_index)
-        elif provider == "replicate":
+        elif selected_provider == "replicate":
             image_url = generate_with_replicate(prompt, visual_style, api_token)
-        elif provider == "picsum":
+        elif selected_provider == "gemini":
+            try:
+                image_url = generate_with_gemini_image(
+                    prompt,
+                    visual_style,
+                    width=img_width,
+                    height=img_height,
+                    scene_index=scene_index,
+                    project_id=project_id,
+                )
+            except Exception as gemini_error:
+                if provider != "gemini":
+                    print(
+                        f"  ⚠️ Gemini routing fallback scene {scene_index}: {gemini_error}. "
+                        f"Retrying with base provider {provider}.",
+                        file=sys.stderr,
+                    )
+                    selected_provider = provider
+                    if selected_provider == "comfyui":
+                        image_url = generate_with_comfyui(
+                            prompt, visual_style,
+                            scene_index=scene_index,
+                            width=img_width,
+                            height=img_height,
+                            project_id=project_id,
+                            verse_type=scene_verse_type,
+                            ai_optimization=ai_optimization
+                        )
+                    elif selected_provider == "replicate":
+                        image_url = generate_with_replicate(prompt, visual_style, api_token)
+                    elif selected_provider == "picsum":
+                        image_url = generate_with_picsum(img_width, img_height, seed=scene_index)
+                    elif selected_provider == "artic":
+                        image_url = generate_with_artic(prompt, scene_index)
+                    else:
+                        image_url = generate_with_pollinations(
+                            prompt,
+                            visual_style,
+                            width=img_width,
+                            height=img_height,
+                            scene_index=scene_index
+                        )
+                else:
+                    raise gemini_error
+        elif selected_provider == "picsum":
             image_url = generate_with_picsum(img_width, img_height, seed=scene_index)
-        elif provider == "artic":
+        elif selected_provider == "artic":
             image_url = generate_with_artic(prompt, scene_index)
-        elif provider == "comfyui":
+        elif selected_provider == "comfyui":
             image_url = generate_with_comfyui(
                 prompt, visual_style,
                 scene_index=scene_index,
@@ -1214,7 +1531,12 @@ def generate_scene_asset(
                 height=img_height,
                 scene_index=scene_index
             )
-            actual_provider = provider
+            actual_provider = selected_provider
+
+        if selected_provider == "gemini":
+            actual_provider = "gemini"
+        elif selected_provider != "comfyui":
+            actual_provider = selected_provider
 
         web_image_url = to_web_url(image_url)
     except Exception as scene_err:
@@ -1232,6 +1554,7 @@ def generate_scene_asset(
         "prompt": prompt,
         "webImageUrl": web_image_url,
         "usedProvider": actual_provider,
+        "routingReason": routing_reason if actual_provider == "gemini" else None,
         "sceneGenerationError": scene_generation_error,
     }
 
@@ -1274,6 +1597,7 @@ def generate_images():
         # Determine which provider to use
         # Available providers:
         #   - replicate: AI-generated images (paid, needs REPLICATE_API_TOKEN)
+        #   - gemini: Gemini image generation (Nano Banana family, needs GEMINI_API_KEY)
         #   - pollinations: AI-generated images (free, uses Pollinations.ai)
         #   - picsum: Random beautiful photos (free, Lorem Picsum)
         #   - artic: Artwork from Art Institute of Chicago (free)
@@ -1282,9 +1606,11 @@ def generate_images():
         image_provider = os.getenv("IMAGE_PROVIDER", "pollinations").lower()
 
         # Map provider names
-        valid_providers = ["replicate", "pollinations", "picsum", "artic", "comfyui", "mock"]
+        valid_providers = ["replicate", "gemini", "pollinations", "picsum", "artic", "comfyui", "mock"]
         if image_provider == "replicate" and api_token:
             provider = "replicate"
+        elif image_provider == "gemini" and (os.getenv("GEMINI_API_KEY") or "").strip():
+            provider = "gemini"
         elif image_provider in valid_providers:
             provider = image_provider
         else:
@@ -1350,6 +1676,7 @@ def generate_images():
         # First frame with score >= 6 becomes the ANCHOR
         # ═══════════════════════════════════════════════════════════════════════════
         protagonist_base = None  # Will be set by first perfect frame
+        consecutive_casting_skips = 0
         total_scenes = len(scenes)
         max_workers = resolve_generation_concurrency(provider, total_scenes)
         print(
@@ -1371,14 +1698,24 @@ def generate_images():
         print(f"PROGRESS:{json.dumps(initial_event)}")
         sys.stdout.flush()
 
+        force_anchor_after_skips = max(
+            0,
+            parse_int_env("FRAME_EXPOSER_FORCE_ANCHOR_AFTER_SKIPS", 2),
+        )
+        force_anchor_min_score = max(
+            0,
+            parse_int_env("FRAME_EXPOSER_FORCE_ANCHOR_MIN_SCORE", 4),
+        )
+
         def finalize_scene(scene_payload: dict):
-            nonlocal protagonist_base
+            nonlocal protagonist_base, consecutive_casting_skips
             i = scene_payload["sceneIndex"]
             scene = scene_payload["scene"]
             prompt = scene_payload["prompt"]
             web_image_url = scene_payload["webImageUrl"]
             used_provider = scene_payload["usedProvider"]
             scene_generation_error = scene_payload["sceneGenerationError"]
+            routing_reason = scene_payload.get("routingReason")
             steering_applied = scene_payload["steeringApplied"]
             steering_message = scene_payload["steeringMessage"]
 
@@ -1389,7 +1726,7 @@ def generate_images():
             exposure_reason = "No quality check"
             set_as_anchor = False
 
-            if EXPOSER_AVAILABLE and provider == "comfyui":
+            if EXPOSER_AVAILABLE and used_provider == "comfyui":
                 verse_type = scene.get("verseType", "NARRATIVE")
                 verse_text = scene.get("verseText", "")
 
@@ -1403,6 +1740,32 @@ def generate_images():
                 exposure_reason = exposure_result.get("reason", "")
                 set_as_anchor = exposure_result.get("set_as_anchor", False)
                 mode = exposure_result.get("checks", {}).get("mode", "UNKNOWN")
+                quality_score = (
+                    exposure_result.get("checks", {})
+                    .get("quality", {})
+                    .get("score", 0)
+                )
+
+                # Relax CASTING when too many initial frames are rejected.
+                # This avoids long frozen intros caused by an overly strict anchor gate.
+                if (
+                    not should_expose
+                    and protagonist_base is None
+                    and scene_generation_error is None
+                    and mode == "CASTING"
+                    and consecutive_casting_skips >= force_anchor_after_skips
+                    and quality_score >= force_anchor_min_score
+                ):
+                    should_expose = True
+                    set_as_anchor = True
+                    exposure_reason = (
+                        f"🎯 CASTING RELAX: forced anchor after {consecutive_casting_skips} "
+                        f"skips (score {quality_score}/7 >= {force_anchor_min_score})"
+                    )
+                    print(
+                        "  🎯 [CASTING] Forced anchor enabled to prevent frozen timeline",
+                        file=sys.stderr,
+                    )
 
                 if set_as_anchor and protagonist_base is None:
                     protagonist_base = prompt
@@ -1414,6 +1777,11 @@ def generate_images():
                 else:
                     print(f"  ✓ [{mode}] Frame exposed: {exposure_reason}", file=sys.stderr)
 
+                if protagonist_base is None and mode == "CASTING":
+                    consecutive_casting_skips += 1
+                else:
+                    consecutive_casting_skips = 0
+
             image_data = {
                 "sceneIndex": i,
                 "prompt": prompt[:200],
@@ -1424,6 +1792,7 @@ def generate_images():
                 "exposureReason": exposure_reason,
                 "steeringApplied": steering_applied,
                 "steeringMessage": steering_message if steering_applied else None,
+                "routingReason": routing_reason,
                 "isFallback": scene_generation_error is not None
             }
             generated_images.append(image_data)
@@ -1524,7 +1893,12 @@ def generate_images():
 
                     steering_applied = False
                     steering_message = ""
-                    if STEERING_AVAILABLE and provider == "comfyui":
+                    scene_provider_hint = provider
+                    route_to_gemini, _ = should_route_to_gemini(provider, prompt, scene_verse_type)
+                    if route_to_gemini and provider != "gemini":
+                        scene_provider_hint = "gemini"
+
+                    if STEERING_AVAILABLE and scene_provider_hint == "comfyui":
                         base_cfg = 5.0
                         base_seed = int(__import__('hashlib').md5(project_id.encode()).hexdigest()[:8], 16) % 1000000
                         base_seed = base_seed + (i * 111)

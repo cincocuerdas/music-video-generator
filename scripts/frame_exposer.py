@@ -20,6 +20,16 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 load_dotenv(os.path.join(root_dir, '.env'))
 
+
+def _parse_int_env(name: str, fallback: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except Exception:
+        return fallback
+
 EXPOSER_SYSTEM_PROMPT = """Rol del modelo
 
 Actuás como editor cinematográfico.
@@ -578,8 +588,9 @@ def full_exposure_check(
                 }
             }
 
-        # CASTING MODE: Need score >= 6 to become anchor (MUY EXIGENTE)
-        CASTING_THRESHOLD = 6
+        # CASTING MODE: Need score >= threshold to become anchor.
+        # Default relaxed to 5 to avoid frozen timelines from over-strict gating.
+        CASTING_THRESHOLD = max(1, _parse_int_env("FRAME_EXPOSER_CASTING_THRESHOLD", 5))
 
         if score >= CASTING_THRESHOLD:
             # ¡FOUND THE ANCHOR! Este frame establece al protagonista

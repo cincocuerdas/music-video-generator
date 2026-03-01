@@ -544,6 +544,19 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
             if continuity_fill_count > 0:
                 print(f"Filled {continuity_fill_count} scene slots with continuity frames", file=sys.stderr)
 
+            render_metrics = {
+                "totalSceneCount": total_scene_count,
+                "postVerseSceneCount": post_verse_scene_count,
+                "allowUnexposedFallback": allow_unexposed_fallback,
+                "unexposedSceneCount": unexposed_scene_count,
+                "unexposedRatio": round(unexposed_ratio, 4),
+                "skippedPreVerseCount": skipped_count,
+                "skippedQualityCount": skipped_quality_count,
+                "skippedMissingCount": skipped_missing_count,
+                "diversityFillCount": diversity_fill_count,
+                "continuityFillCount": continuity_fill_count,
+            }
+
             if not image_files:
                 fallback = build_safe_render_result(
                     project_id=project_id,
@@ -556,6 +569,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     duration=0,
                     error_code="render_video.no_images",
                 )
+                fallback["renderMetrics"] = render_metrics
                 emit_result(fallback)
                 return fallback
 
@@ -584,6 +598,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     warning=save_warning,
                     error_code="render_video.ffmpeg_unavailable",
                 )
+                result["renderMetrics"] = render_metrics
                 emit_result(result)
                 return result
 
@@ -704,6 +719,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     warning=f"FFmpeg failed: {error_tail[:800]}",
                     error_code="render_video.ffmpeg_failed",
                 )
+                result["renderMetrics"] = render_metrics
                 emit_result(result)
                 return result
 
@@ -730,6 +746,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                 "degraded": degraded,
                 "degradedReasons": ["render_video.db_save_warning"] if degraded else [],
                 "warning": save_warning if save_warning else None,
+                "renderMetrics": render_metrics,
             }
             if not useful_output:
                 result["errorCode"] = "render_video.no_output_file"

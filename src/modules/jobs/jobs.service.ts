@@ -1,4 +1,11 @@
-import { Injectable, NotFoundException, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  Logger,
+  BadRequestException,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { JobsOptions, Queue } from 'bullmq';
 import { promises as fs } from 'fs';
@@ -131,6 +138,15 @@ interface StartPipelineResult {
   mode: StartPipelineMode;
 }
 
+interface StaleProcessingJob {
+  id: string;
+  projectId: string;
+  type: JobType;
+  progress: number;
+  currentStep: string | null;
+  updatedAt: Date;
+}
+
 export interface DeadLetterEntry {
   sourceQueue: string;
   projectId: string;
@@ -147,13 +163,15 @@ export interface DeadLetterEntry {
 }
 
 @Injectable()
-export class JobsService {
+export class JobsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(JobsService.name);
   private readonly generationConfigPath = path.join(
     process.cwd(),
     'storage',
     'generation-config.json',
   );
+  private staleWatchdogTimer: NodeJS.Timeout | null = null;
+  private staleWatchdogRunning = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -180,6 +198,174 @@ export class JobsService {
     }
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  }
+
+  private parseBooleanEnv(key: string, fallback: boolean): boolean {
+    const raw = process.env[key];
+    if (!raw) {
+      return fallback;
+    }
+    const normalized = raw.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+      return false;
+    }
+    return fallback;
+  }
+
+  async onModuleInit(): Promise<void> {
+    this.startStaleWatchdog();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.stopStaleWatchdog();
+  }
+
+  private startStaleWatchdog(): void {
+    const enabled = this.parseBooleanEnv(
+      'JOB_STALE_WATCHDOG_ENABLED',
+      process.env.NODE_ENV !== 'test',
+    );
+    if (!enabled) {
+      this.logger.log('[stale-watchdog] disabled by configuration');
+      return;
+    }
+
+    const intervalMs = this.parsePositiveIntEnv('JOB_STALE_WATCHDOG_INTERVAL_MS', 60_000);
+    if (this.staleWatchdogTimer) {
+      clearInterval(this.staleWatchdogTimer);
+      this.staleWatchdogTimer = null;
+    }
+
+    this.staleWatchdogTimer = setInterval(() => {
+      void this.runStaleWatchdogCycle('interval');
+    }, intervalMs);
+    this.staleWatchdogTimer.unref?.();
+
+    this.logger.log(
+      `[stale-watchdog] enabled interval=${intervalMs}ms timeout=${this.parsePositiveIntEnv(
+        'JOB_STALE_TIMEOUT_MS',
+        15 * 60_000,
+      )}ms`,
+    );
+    void this.runStaleWatchdogCycle('startup');
+  }
+
+  private stopStaleWatchdog(): void {
+    if (!this.staleWatchdogTimer) {
+      return;
+    }
+    clearInterval(this.staleWatchdogTimer);
+    this.staleWatchdogTimer = null;
+    this.logger.log('[stale-watchdog] stopped');
+  }
+
+  private async runStaleWatchdogCycle(trigger: 'startup' | 'interval'): Promise<void> {
+    if (this.staleWatchdogRunning) {
+      return;
+    }
+    this.staleWatchdogRunning = true;
+    try {
+      const staleJobs = await this.findStaleProcessingJobs();
+      if (staleJobs.length === 0) {
+        return;
+      }
+
+      this.logger.warn(
+        `[stale-watchdog] trigger=${trigger} detected stale jobs: count=${staleJobs.length}`,
+      );
+
+      for (const staleJob of staleJobs) {
+        await this.failStaleProcessingJob(staleJob);
+      }
+    } catch (error) {
+      this.logger.error(
+        `[stale-watchdog] cycle failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } finally {
+      this.staleWatchdogRunning = false;
+    }
+  }
+
+  private async findStaleProcessingJobs(): Promise<StaleProcessingJob[]> {
+    const timeoutMs = this.parsePositiveIntEnv('JOB_STALE_TIMEOUT_MS', 15 * 60_000);
+    const batchSize = this.parsePositiveIntEnv('JOB_STALE_WATCHDOG_BATCH_SIZE', 20);
+    const cutoff = new Date(Date.now() - timeoutMs);
+
+    return this.prisma.job.findMany({
+      where: {
+        status: JobStatus.PROCESSING,
+        updatedAt: { lt: cutoff },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: batchSize,
+      select: {
+        id: true,
+        projectId: true,
+        type: true,
+        progress: true,
+        currentStep: true,
+        updatedAt: true,
+      },
+    });
+  }
+
+  private async failStaleProcessingJob(staleJob: StaleProcessingJob): Promise<void> {
+    const staleAgeSec = Math.max(1, Math.floor((Date.now() - staleJob.updatedAt.getTime()) / 1000));
+    const staleErrorMessage = `Stale processing timeout: no heartbeat for ${staleAgeSec}s`;
+    const staleCurrentStep = 'Job auto-failed by stale watchdog';
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const failResult = await tx.job.updateMany({
+        where: {
+          id: staleJob.id,
+          status: JobStatus.PROCESSING,
+        },
+        data: {
+          status: JobStatus.FAILED,
+          errorMessage: staleErrorMessage,
+          currentStep: staleCurrentStep,
+        },
+      });
+
+      if (failResult.count === 0) {
+        return false;
+      }
+
+      if (PIPELINE_JOB_TYPE_SET.has(staleJob.type)) {
+        await tx.job.updateMany({
+          where: {
+            projectId: staleJob.projectId,
+            type: { in: PIPELINE_JOB_TYPES },
+            status: { in: [JobStatus.PENDING, JobStatus.PROCESSING] },
+          },
+          data: {
+            status: JobStatus.CANCELLED,
+            errorMessage: 'Cancelled after stale-job watchdog intervention',
+          },
+        });
+
+        await tx.project.updateMany({
+          where: {
+            id: staleJob.projectId,
+            status: { in: [ProjectStatus.DRAFT, ProjectStatus.PROCESSING] },
+          },
+          data: { status: ProjectStatus.FAILED },
+        });
+      }
+
+      return true;
+    });
+
+    if (updated) {
+      this.logger.warn(
+        `[stale-watchdog] auto-failed job=${staleJob.id} project=${staleJob.projectId} type=${staleJob.type} ageSec=${staleAgeSec}`,
+      );
+    }
   }
 
   private resolveProjectSourceMode(project: {
@@ -411,6 +597,11 @@ export class JobsService {
         degradedReasons,
         degradedReasonCodes,
       );
+      await this.appendProjectPipelineStageMetricsMeta(
+        completedJob.projectId,
+        completedJob.type,
+        outputData,
+      );
     }
     return completedJob;
   }
@@ -499,7 +690,45 @@ export class JobsService {
           orderBy: { createdAt: 'asc' },
         });
 
-        const hasActivePipelineJobs = existingPipelineJobs.some((job) =>
+        const activeStatuses = new Set<JobStatus>([JobStatus.PENDING, JobStatus.PROCESSING]);
+        const duplicateActiveJobIds: string[] = [];
+        const seenActiveStages = new Set<JobType>();
+        for (const pipelineJob of existingPipelineJobs) {
+          if (!activeStatuses.has(pipelineJob.status)) {
+            continue;
+          }
+          if (seenActiveStages.has(pipelineJob.type)) {
+            duplicateActiveJobIds.push(pipelineJob.id);
+            continue;
+          }
+          seenActiveStages.add(pipelineJob.type);
+        }
+
+        if (duplicateActiveJobIds.length > 0) {
+          await tx.job.updateMany({
+            where: {
+              id: { in: duplicateActiveJobIds },
+              status: { in: [JobStatus.PENDING, JobStatus.PROCESSING] },
+            },
+            data: {
+              status: JobStatus.CANCELLED,
+              errorMessage: 'Cancelled duplicate active stage during idempotent pipeline start.',
+            },
+          });
+        }
+
+        const canonicalPipelineJobs =
+          duplicateActiveJobIds.length > 0
+            ? await tx.job.findMany({
+                where: {
+                  projectId,
+                  type: { in: PIPELINE_JOB_TYPES },
+                },
+                orderBy: { createdAt: 'asc' },
+              })
+            : existingPipelineJobs;
+
+        const hasActivePipelineJobs = canonicalPipelineJobs.some((job) =>
           job.status === JobStatus.PENDING || job.status === JobStatus.PROCESSING,
         );
 
@@ -510,7 +739,7 @@ export class JobsService {
               data: { status: ProjectStatus.PROCESSING },
             });
           }
-          return { jobs: existingPipelineJobs, mode: 'reused' };
+          return { jobs: canonicalPipelineJobs, mode: 'reused' };
         }
 
         if (project.status !== ProjectStatus.DRAFT) {
@@ -519,7 +748,12 @@ export class JobsService {
           );
         }
 
-        await tx.job.deleteMany({ where: { projectId } });
+        await tx.job.deleteMany({
+          where: {
+            projectId,
+            type: { in: PIPELINE_JOB_TYPES },
+          },
+        });
 
         await tx.project.update({
           where: { id: projectId },
@@ -716,6 +950,171 @@ export class JobsService {
       degraded: true,
       degradedReasons: mergedReasons,
       degradedReasonCodes: mergedReasonCodes,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await this.prisma.project.update({
+      where: { id: projectId },
+      data: { analysisResult: analysisResult as Prisma.InputJsonValue },
+    });
+  }
+
+  private toFiniteNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  private extractStageMetrics(jobType: JobType, outputData: unknown): Record<string, unknown> | null {
+    if (!outputData || typeof outputData !== 'object' || Array.isArray(outputData)) {
+      return null;
+    }
+
+    const payload = outputData as Record<string, unknown>;
+    const updatedAt = new Date().toISOString();
+
+    if (jobType === JobType.GENERATE_IMAGES) {
+      const images = Array.isArray(payload.images)
+        ? (payload.images as Array<Record<string, unknown>>)
+        : [];
+      const totalScenes = Math.max(
+        0,
+        Math.round(this.toFiniteNumber(payload.totalScenes) ?? images.length),
+      );
+      const generatedCount = Math.max(
+        0,
+        Math.round(this.toFiniteNumber(payload.generatedCount) ?? images.length),
+      );
+      const failedCount = Math.max(
+        0,
+        Math.round(this.toFiniteNumber(payload.failedCount) ?? 0),
+      );
+
+      const exposedCount = images.filter((item) => item?.exposed === true).length;
+      const unexposedCount = images.filter((item) => item?.exposed === false).length;
+      const fallbackCount = images.filter((item) => item?.isFallback === true).length;
+
+      return {
+        totalScenes,
+        generatedCount,
+        failedCount,
+        exposedCount,
+        unexposedCount,
+        fallbackCount,
+        exposureRate: totalScenes > 0 ? Number((exposedCount / totalScenes).toFixed(4)) : 0,
+        updatedAt,
+      };
+    }
+
+    if (jobType === JobType.RENDER_VIDEO) {
+      const explicitMetrics =
+        payload.renderMetrics &&
+        typeof payload.renderMetrics === 'object' &&
+        !Array.isArray(payload.renderMetrics)
+          ? (payload.renderMetrics as Record<string, unknown>)
+          : {};
+
+      return {
+        totalSceneCount: Math.max(
+          0,
+          Math.round(
+            this.toFiniteNumber(explicitMetrics.totalSceneCount) ??
+              this.toFiniteNumber(payload.framesUsed) ??
+              0,
+          ),
+        ),
+        postVerseSceneCount: Math.max(
+          0,
+          Math.round(this.toFiniteNumber(explicitMetrics.postVerseSceneCount) ?? 0),
+        ),
+        skippedQualityCount: Math.max(
+          0,
+          Math.round(this.toFiniteNumber(explicitMetrics.skippedQualityCount) ?? 0),
+        ),
+        skippedMissingCount: Math.max(
+          0,
+          Math.round(this.toFiniteNumber(explicitMetrics.skippedMissingCount) ?? 0),
+        ),
+        diversityFillCount: Math.max(
+          0,
+          Math.round(this.toFiniteNumber(explicitMetrics.diversityFillCount) ?? 0),
+        ),
+        continuityFillCount: Math.max(
+          0,
+          Math.round(this.toFiniteNumber(explicitMetrics.continuityFillCount) ?? 0),
+        ),
+        allowUnexposedFallback: explicitMetrics.allowUnexposedFallback === true,
+        unexposedRatio: Math.max(
+          0,
+          Number((this.toFiniteNumber(explicitMetrics.unexposedRatio) ?? 0).toFixed(4)),
+        ),
+        framesUsed: Math.max(0, Math.round(this.toFiniteNumber(payload.framesUsed) ?? 0)),
+        durationSec: Math.max(0, this.toFiniteNumber(payload.duration) ?? 0),
+        updatedAt,
+      };
+    }
+
+    return null;
+  }
+
+  private async appendProjectPipelineStageMetricsMeta(
+    projectId: string,
+    jobType: JobType,
+    outputData: unknown,
+  ): Promise<void> {
+    const stageMetrics = this.extractStageMetrics(jobType, outputData);
+    if (!stageMetrics) {
+      return;
+    }
+
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { analysisResult: true },
+    });
+    if (!project) {
+      return;
+    }
+
+    const analysisResult =
+      project.analysisResult &&
+      typeof project.analysisResult === 'object' &&
+      !Array.isArray(project.analysisResult)
+        ? { ...(project.analysisResult as Record<string, unknown>) }
+        : {};
+
+    const existingMeta =
+      analysisResult._pipelineQuality &&
+      typeof analysisResult._pipelineQuality === 'object' &&
+      !Array.isArray(analysisResult._pipelineQuality)
+        ? (analysisResult._pipelineQuality as Record<string, unknown>)
+        : {};
+
+    const existingStageMetrics =
+      existingMeta.stageMetrics &&
+      typeof existingMeta.stageMetrics === 'object' &&
+      !Array.isArray(existingMeta.stageMetrics)
+        ? { ...(existingMeta.stageMetrics as Record<string, unknown>) }
+        : {};
+
+    const stageKey =
+      jobType === JobType.GENERATE_IMAGES
+        ? 'generateImages'
+        : jobType === JobType.RENDER_VIDEO
+          ? 'renderVideo'
+          : jobType.toLowerCase();
+
+    existingStageMetrics[stageKey] = stageMetrics;
+
+    analysisResult._pipelineQuality = {
+      ...existingMeta,
+      stageMetrics: existingStageMetrics,
       updatedAt: new Date().toISOString(),
     };
 

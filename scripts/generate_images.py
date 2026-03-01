@@ -2006,16 +2006,31 @@ def generate_images():
         failed_count = len([img for img in generated_images if img["status"] == "failed"])
         degraded = any(img.get("isFallback") for img in generated_images) or bool(db_save_warning)
         useful_output = generated_count > 0
+        total_scenes = len(scenes)
+        exposed_count = len([img for img in generated_images if img.get("exposed") is True])
+        unexposed_count = len([img for img in generated_images if img.get("exposed") is False])
+        fallback_count = len([img for img in generated_images if img.get("isFallback") is True])
+        exposure_metrics = {
+            "totalScenes": total_scenes,
+            "generatedCount": generated_count,
+            "failedCount": failed_count,
+            "exposedCount": exposed_count,
+            "unexposedCount": unexposed_count,
+            "fallbackCount": fallback_count,
+            "exposureRate": (round((exposed_count / total_scenes), 4) if total_scenes > 0 else 0.0),
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
         result = {
             "status": compute_status(degraded, useful_output),
             "success": useful_output,
-            "totalScenes": len(scenes),
+            "totalScenes": total_scenes,
             "generatedCount": generated_count,
             "failedCount": failed_count,
             "images": generated_images,
             "mode": provider,
             "degraded": degraded,
             "dbSaveWarning": db_save_warning,
+            "exposureMetrics": exposure_metrics,
         }
 
         emit_result(result)

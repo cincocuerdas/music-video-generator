@@ -184,6 +184,7 @@ export function validateScriptResultContract(result: unknown): ScriptContractVal
   const success = payload.success;
   const degraded = payload.degraded;
   const degradedReasons = payload.degradedReasons;
+  const normalizedStatus = typeof status === 'string' ? status.toLowerCase().trim() : '';
 
   if (typeof status !== 'string' || !['success', 'degraded', 'failed'].includes(status.toLowerCase())) {
     issues.push('status must be one of success|degraded|failed');
@@ -196,6 +197,12 @@ export function validateScriptResultContract(result: unknown): ScriptContractVal
   }
   if (!Array.isArray(degradedReasons)) {
     issues.push('degradedReasons must be an array');
+  }
+  if (normalizedStatus === 'failed' || success === false) {
+    const errorCode = payload.errorCode;
+    if (typeof errorCode !== 'string' || !errorCode.trim()) {
+      issues.push('errorCode must be a non-empty string when status=failed or success=false');
+    }
   }
 
   return {
@@ -263,6 +270,52 @@ export function assessScriptResult(result: unknown): ScriptResultAssessment {
     contractValid: true,
     contractIssues: [],
   };
+}
+
+function collectResultStrings(result: unknown): string[] {
+  if (!result || typeof result !== 'object') {
+    return [];
+  }
+
+  const payload = result as Record<string, unknown>;
+  const values: string[] = [];
+  const pushIfString = (value: unknown) => {
+    if (typeof value === 'string' && value.trim()) {
+      values.push(value.trim().toLowerCase());
+    }
+  };
+
+  pushIfString(payload.message);
+  pushIfString(payload.warning);
+  pushIfString(payload.error);
+  pushIfString(payload.details);
+  pushIfString(payload._fallbackReason);
+
+  if (Array.isArray(payload.degradedReasons)) {
+    for (const reason of payload.degradedReasons) {
+      pushIfString(reason);
+    }
+  }
+
+  return values;
+}
+
+export function isQuotaDegradedResult(result: unknown): boolean {
+  const lowered = collectResultStrings(result);
+  if (!lowered.length) {
+    return false;
+  }
+
+  const hasQuotaSignal = lowered.some((value) =>
+    value.includes('status code 429') ||
+    value.includes('http 429') ||
+    value.includes('resource_exhausted') ||
+    value.includes('quota exceeded') ||
+    value.includes('rate limit') ||
+    value.includes('too many requests'),
+  );
+
+  return hasQuotaSignal;
 }
 
 type RealtimeJobStatus = 'processing' | 'completed' | 'failed';

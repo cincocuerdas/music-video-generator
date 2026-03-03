@@ -13,6 +13,16 @@ import { DeadLetterProcessor } from './processors/dead-letter.processor';
 import { PythonRunnerModule } from '../../common/services';
 import { ProjectsModule } from '../projects/projects.module';
 import { ObservabilityModule } from '../observability';
+import { DeadLetterService } from './services/dead-letter.service';
+import { StaleWatchdogService } from './services/stale-watchdog.service';
+import { PipelineOrchestratorService } from './services/pipeline-orchestrator.service';
+import { JobDispatchService } from './services/job-dispatch.service';
+import { ProjectPipelineQualityService } from './services/project-pipeline-quality.service';
+import { PipelineTransitionService } from './services/pipeline-transition.service';
+import { PipelineStatusService } from './services/pipeline-status.service';
+import { DeadLetterOrchestratorService } from './services/dead-letter-orchestrator.service';
+import { StyleLoraService } from './services/style-lora.service';
+import { PipelineCancellationService } from './services/pipeline-cancellation.service';
 
 @Module({
   imports: [
@@ -25,6 +35,16 @@ import { ObservabilityModule } from '../observability';
   controllers: [JobsController],
   providers: [
     JobsService,
+    DeadLetterService,
+    DeadLetterOrchestratorService,
+    StaleWatchdogService,
+    PipelineOrchestratorService,
+    PipelineTransitionService,
+    PipelineStatusService,
+    PipelineCancellationService,
+    StyleLoraService,
+    JobDispatchService,
+    ProjectPipelineQualityService,
     YouTubeDownloadProcessor,
     TranscriptionProcessor,
     AnalysisProcessor,

@@ -2,7 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { QUEUE_NAMES } from '../../queue';
-import { DeadLetterEntry } from '../jobs.service';
+import { DeadLetterEntry } from '../services/dead-letter.service';
 
 @Processor(QUEUE_NAMES.DEAD_LETTER)
 export class DeadLetterProcessor extends WorkerHost {

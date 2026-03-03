@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { JobsService } from '../jobs.service';
+import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestrator.service';
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
@@ -15,6 +16,7 @@ import {
   emitFailedUpdate,
   emitProcessingUpdate,
   getJobTraceContext,
+  isQuotaDegradedResult,
   shouldRetryError,
   updateProgressAndEmit,
 } from './retry.utils';
@@ -26,6 +28,7 @@ export class AnalysisProcessor extends WorkerHost {
 
   constructor(
     private readonly jobsService: JobsService,
+    private readonly deadLetterOrchestrator: DeadLetterOrchestratorService,
     private readonly pythonRunnerService: PythonRunnerService,
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
@@ -85,6 +88,11 @@ export class AnalysisProcessor extends WorkerHost {
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {
         throw new Error(assessment.message || 'analyze_lyrics.py returned failed status');
+      }
+      if (assessment.normalizedStatus === 'degraded' && isQuotaDegradedResult(result)) {
+        throw new Error(
+          'Analysis degraded due AI quota/rate-limit exhaustion. Blocking downstream generation to avoid incoherent output.',
+        );
       }
       if (assessment.normalizedStatus === 'unknown' && assessment.rawStatus) {
         this.logger.warn(
@@ -172,7 +180,7 @@ export class AnalysisProcessor extends WorkerHost {
         },
       });
       await this.jobsService.markAsFailed(jobId, message);
-      await this.jobsService.enqueueDeadLetter({
+      await this.deadLetterOrchestrator.enqueue({
         sourceQueue: QUEUE_NAMES.ANALYSIS,
         projectId,
         jobId,

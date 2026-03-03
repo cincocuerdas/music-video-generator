@@ -2,24 +2,22 @@ import {
   Injectable,
   NotFoundException,
   Logger,
-  BadRequestException,
-  OnModuleDestroy,
-  OnModuleInit,
 } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { JobsOptions, Queue } from 'bullmq';
-import { promises as fs } from 'fs';
-import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma';
-import { Job, JobType, JobStatus, ProjectStatus, Prisma } from '@prisma/client';
-import { QUEUE_NAMES } from '../queue';
+import { Job, JobType, JobStatus, ProjectStatus } from '@prisma/client';
+import { PipelineOrchestratorService } from './services/pipeline-orchestrator.service';
+import { JobDispatchService } from './services/job-dispatch.service';
+import { ProjectPipelineQualityService } from './services/project-pipeline-quality.service';
+import { PipelineTransitionService } from './services/pipeline-transition.service';
+import { PipelineStatusService } from './services/pipeline-status.service';
+import { PipelineCancellationService } from './services/pipeline-cancellation.service';
+import { StyleLoraService } from './services/style-lora.service';
 import {
-  deriveProjectPipelineStatus,
   extractDegradedReasonCodesFromOutputData,
   extractDegradedReasonsFromOutputData,
-  summarizePipelineQuality,
 } from './pipeline-quality.utils';
+import type { PipelineStatus } from './types/pipeline-status.type';
 
 export interface CreateJobDto {
   projectId: string;
@@ -36,45 +34,6 @@ export interface UpdateJobDto {
   outputData?: Record<string, any>;
 }
 
-export interface PipelineStatus {
-  projectId: string;
-  projectStatus: ProjectStatus;
-  pipelineStatus:
-    | 'draft'
-    | 'processing'
-    | 'success'
-    | 'degraded'
-    | 'failed'
-    | 'cancelled';
-  degraded: boolean;
-  degradedReasons: string[];
-  degradedReasonCodes: string[];
-  jobs: {
-    type: JobType;
-    status: JobStatus;
-    progress: number;
-    currentStep: string | null;
-    errorMessage: string | null;
-  }[];
-  currentJob: JobType | null;
-  overallProgress: number;
-}
-
-interface StyleLoraConfigEntry {
-  loraFilename: string;
-  loraPath: string;
-  updatedAt: string;
-  likesUsed?: number;
-}
-
-const FULL_PIPELINE_ORDER: JobType[] = [
-  JobType.YOUTUBE_DOWNLOAD,
-  JobType.TRANSCRIPTION,
-  JobType.ANALYZE_LYRICS,
-  JobType.GENERATE_IMAGES,
-  JobType.RENDER_VIDEO,
-  JobType.FINALIZE,
-];
 const PIPELINE_JOB_TYPES: JobType[] = [
   JobType.YOUTUBE_DOWNLOAD,
   JobType.TRANSCRIPTION,
@@ -84,52 +43,6 @@ const PIPELINE_JOB_TYPES: JobType[] = [
   JobType.FINALIZE,
 ];
 const PIPELINE_JOB_TYPE_SET = new Set<JobType>(PIPELINE_JOB_TYPES);
-type PipelineSourceMode = 'youtube' | 'audio' | 'lyrics';
-interface PipelineDefinition {
-  source: PipelineSourceMode;
-  order: JobType[];
-}
-
-const RETRY_ENV_CONFIG: Partial<
-  Record<JobType, { attemptsEnv: string; attemptsDefault: number; delayEnv: string; delayDefault: number }>
-> = {
-  [JobType.YOUTUBE_DOWNLOAD]: {
-    attemptsEnv: 'JOB_RETRY_ATTEMPTS_YOUTUBE_DOWNLOAD',
-    attemptsDefault: 2,
-    delayEnv: 'JOB_RETRY_DELAY_MS_YOUTUBE_DOWNLOAD',
-    delayDefault: 15_000,
-  },
-  [JobType.TRANSCRIPTION]: {
-    attemptsEnv: 'JOB_RETRY_ATTEMPTS_TRANSCRIPTION',
-    attemptsDefault: 2,
-    delayEnv: 'JOB_RETRY_DELAY_MS_TRANSCRIPTION',
-    delayDefault: 20_000,
-  },
-  [JobType.ANALYZE_LYRICS]: {
-    attemptsEnv: 'JOB_RETRY_ATTEMPTS_ANALYZE_LYRICS',
-    attemptsDefault: 3,
-    delayEnv: 'JOB_RETRY_DELAY_MS_ANALYZE_LYRICS',
-    delayDefault: 10_000,
-  },
-  [JobType.GENERATE_IMAGES]: {
-    attemptsEnv: 'JOB_RETRY_ATTEMPTS_GENERATE_IMAGES',
-    attemptsDefault: 3,
-    delayEnv: 'JOB_RETRY_DELAY_MS_GENERATE_IMAGES',
-    delayDefault: 15_000,
-  },
-  [JobType.RENDER_VIDEO]: {
-    attemptsEnv: 'JOB_RETRY_ATTEMPTS_RENDER_VIDEO',
-    attemptsDefault: 2,
-    delayEnv: 'JOB_RETRY_DELAY_MS_RENDER_VIDEO',
-    delayDefault: 20_000,
-  },
-  [JobType.TRAIN_LORA]: {
-    attemptsEnv: 'JOB_RETRY_ATTEMPTS_TRAIN_LORA',
-    attemptsDefault: 2,
-    delayEnv: 'JOB_RETRY_DELAY_MS_TRAIN_LORA',
-    delayDefault: 60_000,
-  },
-};
 
 type StartPipelineMode = 'created' | 'reused';
 
@@ -138,335 +51,20 @@ interface StartPipelineResult {
   mode: StartPipelineMode;
 }
 
-interface StaleProcessingJob {
-  id: string;
-  projectId: string;
-  type: JobType;
-  progress: number;
-  currentStep: string | null;
-  updatedAt: Date;
-}
-
-export interface DeadLetterEntry {
-  sourceQueue: string;
-  projectId: string;
-  jobId: string;
-  jobType: JobType;
-  correlationId: string;
-  message: string;
-  attemptsMade: number;
-  maxAttempts: number;
-  retryable: boolean;
-  category: 'transient' | 'permanent' | 'unknown';
-  payload?: Record<string, unknown>;
-  capturedAt: string;
-}
-
 @Injectable()
-export class JobsService implements OnModuleInit, OnModuleDestroy {
+export class JobsService {
   private readonly logger = new Logger(JobsService.name);
-  private readonly generationConfigPath = path.join(
-    process.cwd(),
-    'storage',
-    'generation-config.json',
-  );
-  private staleWatchdogTimer: NodeJS.Timeout | null = null;
-  private staleWatchdogRunning = false;
 
   constructor(
     private readonly prisma: PrismaService,
-    @InjectQueue(QUEUE_NAMES.YOUTUBE_DOWNLOAD)
-    private readonly youtubeDownloadQueue: Queue,
-    @InjectQueue(QUEUE_NAMES.TRANSCRIPTION)
-    private readonly transcriptionQueue: Queue,
-    @InjectQueue(QUEUE_NAMES.ANALYSIS)
-    private readonly analysisQueue: Queue,
-    @InjectQueue(QUEUE_NAMES.IMAGE_GENERATION)
-    private readonly imageGenerationQueue: Queue,
-    @InjectQueue(QUEUE_NAMES.VIDEO_RENDER)
-    private readonly videoRenderQueue: Queue,
-    @InjectQueue(QUEUE_NAMES.TRAIN_LORA)
-    private readonly trainLoraQueue: Queue,
-    @InjectQueue(QUEUE_NAMES.DEAD_LETTER)
-    private readonly deadLetterQueue: Queue,
+    private readonly pipelineOrchestrator: PipelineOrchestratorService,
+    private readonly pipelineTransitionService: PipelineTransitionService,
+    private readonly pipelineStatusService: PipelineStatusService,
+    private readonly pipelineCancellationService: PipelineCancellationService,
+    private readonly jobDispatchService: JobDispatchService,
+    private readonly projectPipelineQualityService: ProjectPipelineQualityService,
+    private readonly styleLoraService: StyleLoraService,
   ) { }
-
-  private parsePositiveIntEnv(key: string, fallback: number): number {
-    const raw = process.env[key];
-    if (!raw) {
-      return fallback;
-    }
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-  }
-
-  private parseBooleanEnv(key: string, fallback: boolean): boolean {
-    const raw = process.env[key];
-    if (!raw) {
-      return fallback;
-    }
-    const normalized = raw.trim().toLowerCase();
-    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
-      return true;
-    }
-    if (['0', 'false', 'no', 'off'].includes(normalized)) {
-      return false;
-    }
-    return fallback;
-  }
-
-  async onModuleInit(): Promise<void> {
-    this.startStaleWatchdog();
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    this.stopStaleWatchdog();
-  }
-
-  private startStaleWatchdog(): void {
-    const enabled = this.parseBooleanEnv(
-      'JOB_STALE_WATCHDOG_ENABLED',
-      process.env.NODE_ENV !== 'test',
-    );
-    if (!enabled) {
-      this.logger.log('[stale-watchdog] disabled by configuration');
-      return;
-    }
-
-    const intervalMs = this.parsePositiveIntEnv('JOB_STALE_WATCHDOG_INTERVAL_MS', 60_000);
-    if (this.staleWatchdogTimer) {
-      clearInterval(this.staleWatchdogTimer);
-      this.staleWatchdogTimer = null;
-    }
-
-    this.staleWatchdogTimer = setInterval(() => {
-      void this.runStaleWatchdogCycle('interval');
-    }, intervalMs);
-    this.staleWatchdogTimer.unref?.();
-
-    this.logger.log(
-      `[stale-watchdog] enabled interval=${intervalMs}ms timeout=${this.parsePositiveIntEnv(
-        'JOB_STALE_TIMEOUT_MS',
-        15 * 60_000,
-      )}ms`,
-    );
-    void this.runStaleWatchdogCycle('startup');
-  }
-
-  private stopStaleWatchdog(): void {
-    if (!this.staleWatchdogTimer) {
-      return;
-    }
-    clearInterval(this.staleWatchdogTimer);
-    this.staleWatchdogTimer = null;
-    this.logger.log('[stale-watchdog] stopped');
-  }
-
-  private async runStaleWatchdogCycle(trigger: 'startup' | 'interval'): Promise<void> {
-    if (this.staleWatchdogRunning) {
-      return;
-    }
-    this.staleWatchdogRunning = true;
-    try {
-      const staleJobs = await this.findStaleProcessingJobs();
-      if (staleJobs.length === 0) {
-        return;
-      }
-
-      this.logger.warn(
-        `[stale-watchdog] trigger=${trigger} detected stale jobs: count=${staleJobs.length}`,
-      );
-
-      for (const staleJob of staleJobs) {
-        await this.failStaleProcessingJob(staleJob);
-      }
-    } catch (error) {
-      this.logger.error(
-        `[stale-watchdog] cycle failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    } finally {
-      this.staleWatchdogRunning = false;
-    }
-  }
-
-  private async findStaleProcessingJobs(): Promise<StaleProcessingJob[]> {
-    const timeoutMs = this.parsePositiveIntEnv('JOB_STALE_TIMEOUT_MS', 15 * 60_000);
-    const batchSize = this.parsePositiveIntEnv('JOB_STALE_WATCHDOG_BATCH_SIZE', 20);
-    const cutoff = new Date(Date.now() - timeoutMs);
-
-    return this.prisma.job.findMany({
-      where: {
-        status: JobStatus.PROCESSING,
-        updatedAt: { lt: cutoff },
-      },
-      orderBy: { updatedAt: 'asc' },
-      take: batchSize,
-      select: {
-        id: true,
-        projectId: true,
-        type: true,
-        progress: true,
-        currentStep: true,
-        updatedAt: true,
-      },
-    });
-  }
-
-  private async failStaleProcessingJob(staleJob: StaleProcessingJob): Promise<void> {
-    const staleAgeSec = Math.max(1, Math.floor((Date.now() - staleJob.updatedAt.getTime()) / 1000));
-    const staleErrorMessage = `Stale processing timeout: no heartbeat for ${staleAgeSec}s`;
-    const staleCurrentStep = 'Job auto-failed by stale watchdog';
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const failResult = await tx.job.updateMany({
-        where: {
-          id: staleJob.id,
-          status: JobStatus.PROCESSING,
-        },
-        data: {
-          status: JobStatus.FAILED,
-          errorMessage: staleErrorMessage,
-          currentStep: staleCurrentStep,
-        },
-      });
-
-      if (failResult.count === 0) {
-        return false;
-      }
-
-      if (PIPELINE_JOB_TYPE_SET.has(staleJob.type)) {
-        await tx.job.updateMany({
-          where: {
-            projectId: staleJob.projectId,
-            type: { in: PIPELINE_JOB_TYPES },
-            status: { in: [JobStatus.PENDING, JobStatus.PROCESSING] },
-          },
-          data: {
-            status: JobStatus.CANCELLED,
-            errorMessage: 'Cancelled after stale-job watchdog intervention',
-          },
-        });
-
-        await tx.project.updateMany({
-          where: {
-            id: staleJob.projectId,
-            status: { in: [ProjectStatus.DRAFT, ProjectStatus.PROCESSING] },
-          },
-          data: { status: ProjectStatus.FAILED },
-        });
-      }
-
-      return true;
-    });
-
-    if (updated) {
-      this.logger.warn(
-        `[stale-watchdog] auto-failed job=${staleJob.id} project=${staleJob.projectId} type=${staleJob.type} ageSec=${staleAgeSec}`,
-      );
-    }
-  }
-
-  private resolveProjectSourceMode(project: {
-    youtubeUrl: string | null;
-    audioUrl: string | null;
-    lyrics: string | null;
-  }): PipelineSourceMode | 'unknown' {
-    const youtubeUrl = (project.youtubeUrl || '').trim();
-    const audioUrl = (project.audioUrl || '').trim();
-    const lyrics = (project.lyrics || '').trim();
-
-    if (youtubeUrl) {
-      return 'youtube';
-    }
-    if (audioUrl && !lyrics) {
-      return 'audio';
-    }
-    if (lyrics || audioUrl) {
-      return 'lyrics';
-    }
-    return 'unknown';
-  }
-
-  private ensureProviderPreflight(): void {
-    const imageProvider = (process.env.IMAGE_PROVIDER || 'comfyui').trim().toLowerCase();
-    const llmProvider = (process.env.LLM_PROVIDER || 'gemini').trim().toLowerCase();
-
-    if (imageProvider === 'comfyui' && !(process.env.COMFYUI_URL || '').trim()) {
-      throw new BadRequestException(
-        'Pipeline preflight failed: COMFYUI_URL is missing while IMAGE_PROVIDER=comfyui.',
-      );
-    }
-
-    if (imageProvider === 'replicate' && !(process.env.REPLICATE_API_TOKEN || '').trim()) {
-      throw new BadRequestException(
-        'Pipeline preflight failed: REPLICATE_API_TOKEN is missing while IMAGE_PROVIDER=replicate.',
-      );
-    }
-
-    if (llmProvider === 'gemini' && !(process.env.GEMINI_API_KEY || '').trim()) {
-      throw new BadRequestException(
-        'Pipeline preflight failed: GEMINI_API_KEY is missing while LLM_PROVIDER=gemini.',
-      );
-    }
-  }
-
-  private ensureProjectPreflight(project: {
-    youtubeUrl: string | null;
-    audioUrl: string | null;
-    lyrics: string | null;
-  }): void {
-    const youtubeUrl = (project.youtubeUrl || '').trim();
-    const audioUrl = (project.audioUrl || '').trim();
-    const lyrics = (project.lyrics || '').trim();
-
-    if (!youtubeUrl && !audioUrl && !lyrics) {
-      throw new BadRequestException(
-        'Pipeline preflight failed: project has no source input (youtubeUrl/audioUrl/lyrics).',
-      );
-    }
-  }
-
-  private buildPipelineDefinition(project: {
-    youtubeUrl: string | null;
-    audioUrl: string | null;
-    lyrics: string | null;
-  }): PipelineDefinition {
-    const youtubeUrl = (project.youtubeUrl || '').trim();
-    const audioUrl = (project.audioUrl || '').trim();
-    const lyrics = (project.lyrics || '').trim();
-
-    if (youtubeUrl) {
-      return {
-        source: 'youtube',
-        order: [...FULL_PIPELINE_ORDER],
-      };
-    }
-
-    if (audioUrl && !lyrics) {
-      return {
-        source: 'audio',
-        order: [
-          JobType.TRANSCRIPTION,
-          JobType.ANALYZE_LYRICS,
-          JobType.GENERATE_IMAGES,
-          JobType.RENDER_VIDEO,
-          JobType.FINALIZE,
-        ],
-      };
-    }
-
-    return {
-      source: 'lyrics',
-      order: [
-        JobType.ANALYZE_LYRICS,
-        JobType.GENERATE_IMAGES,
-        JobType.RENDER_VIDEO,
-        JobType.FINALIZE,
-      ],
-    };
-  }
 
   private async assertProjectOwnership(projectId: string, userId: string): Promise<void> {
     const project = await this.prisma.project.findFirst({
@@ -592,12 +190,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         outputData,
         completedJob.type,
       );
-      await this.appendProjectPipelineQualityMeta(
+      await this.projectPipelineQualityService.appendDegradedMeta(
         completedJob.projectId,
         degradedReasons,
         degradedReasonCodes,
       );
-      await this.appendProjectPipelineStageMetricsMeta(
+      await this.projectPipelineQualityService.appendStageMetrics(
         completedJob.projectId,
         completedJob.type,
         outputData,
@@ -670,10 +268,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           throw new NotFoundException(`Project with id ${projectId} not found`);
         }
 
-        this.ensureProviderPreflight();
-        this.ensureProjectPreflight(project);
-        const pipelineDefinition = this.buildPipelineDefinition(project);
-        const resolvedProjectSource = this.resolveProjectSourceMode(project);
+        this.pipelineOrchestrator.ensureProviderPreflight();
+        this.pipelineOrchestrator.ensureProjectPreflight(project);
+        const pipelineDefinition = this.pipelineOrchestrator.buildPipelineDefinition(project);
+        const resolvedProjectSource = this.pipelineOrchestrator.resolveProjectSourceMode(project);
 
         if (project.sourceMode !== resolvedProjectSource) {
           await tx.project.update({
@@ -785,7 +383,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const firstPendingJob = jobs.find((job) => job.status === JobStatus.PENDING);
 
       if (startResult.mode === 'created') {
-        await this.clearProjectPipelineQualityMeta(projectId);
+        await this.projectPipelineQualityService.clearMeta(projectId);
         const firstJob = jobs[0];
         await this.dispatchJob(firstJob);
         this.logger.log(`Pipeline started successfully for project ${projectId}`);
@@ -814,29 +412,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       orderBy: { createdAt: 'asc' },
     });
 
-    if (jobs.length === 0) {
-      throw new NotFoundException(`No jobs found for project ${projectId}`);
+    const decision = this.pipelineTransitionService.resolveAdvanceDecision(projectId, jobs);
+    if (decision.kind === 'dispatch') {
+      await this.dispatchJob(decision.job);
+      this.logger.log(`Advanced pipeline to ${decision.job.type} for project ${projectId}`);
+      return decision.job;
     }
 
-    const pipelineJobs = jobs.filter((job) => PIPELINE_JOB_TYPE_SET.has(job.type));
-    if (pipelineJobs.length === 0) {
-      throw new NotFoundException(`No pipeline jobs found for project ${projectId}`);
-    }
-
-    const nextJob = pipelineJobs.find((job) => job.status === JobStatus.PENDING);
-    if (nextJob) {
-      await this.dispatchJob(nextJob);
-      this.logger.log(`Advanced pipeline to ${nextJob.type} for project ${projectId}`);
-      return nextJob;
-    }
-
-    const hasRunning = pipelineJobs.some((job) => job.status === JobStatus.PROCESSING);
-    if (hasRunning) {
+    if (decision.kind === 'wait') {
       return null;
     }
 
-    const allCompleted = pipelineJobs.every((job) => job.status === JobStatus.COMPLETED);
-    if (allCompleted) {
+    if (decision.kind === 'complete') {
       await this.prisma.project.update({
         where: { id: projectId },
         data: { status: ProjectStatus.COMPLETED },
@@ -849,445 +436,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getPipelineStatus(projectId: string): Promise<PipelineStatus> {
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
-    });
-
-    if (!project) throw new NotFoundException(`Project with id ${projectId} not found`);
-
-    const jobs = await this.prisma.job.findMany({
-      where: { projectId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    const currentJob = jobs.find((job) => job.status === JobStatus.PROCESSING);
-    const pipelineJobs = jobs.filter((job) => PIPELINE_JOB_TYPE_SET.has(job.type));
-    const quality = summarizePipelineQuality(pipelineJobs);
-    const normalizedPipelineProgress = pipelineJobs.reduce((sum, job) => {
-      if (job.status === JobStatus.COMPLETED) {
-        return sum + 100;
-      }
-
-      if (job.status === JobStatus.PROCESSING) {
-        const safeProgress = Math.max(0, Math.min(100, job.progress || 0));
-        return sum + safeProgress;
-      }
-
-      return sum;
-    }, 0);
-
-    const overallProgress =
-      pipelineJobs.length > 0
-        ? Math.round(normalizedPipelineProgress / pipelineJobs.length)
-        : 0;
-
-    return {
-      projectId,
-      projectStatus: project.status,
-      pipelineStatus: deriveProjectPipelineStatus(project.status, quality),
-      degraded: quality.degraded,
-      degradedReasons: quality.degradedReasons,
-      degradedReasonCodes: quality.degradedReasonCodes,
-      jobs: jobs.map((job) => ({
-        type: job.type,
-        status: job.status,
-        progress: job.progress,
-        currentStep: job.currentStep,
-        errorMessage: job.errorMessage,
-      })),
-      currentJob: currentJob?.type ?? null,
-      overallProgress,
-    };
-  }
-
-  private async appendProjectPipelineQualityMeta(
-    projectId: string,
-    degradedReasons: string[],
-    degradedReasonCodes: string[] = [],
-  ): Promise<void> {
-    if (!degradedReasons.length && !degradedReasonCodes.length) {
-      return;
-    }
-
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
-      select: { analysisResult: true },
-    });
-    if (!project) {
-      return;
-    }
-
-    const analysisResult =
-      project.analysisResult &&
-      typeof project.analysisResult === 'object' &&
-      !Array.isArray(project.analysisResult)
-        ? { ...(project.analysisResult as Record<string, unknown>) }
-        : {};
-
-    const existingMeta =
-      analysisResult._pipelineQuality &&
-      typeof analysisResult._pipelineQuality === 'object' &&
-      !Array.isArray(analysisResult._pipelineQuality)
-        ? (analysisResult._pipelineQuality as Record<string, unknown>)
-        : {};
-    const existingReasons = Array.isArray(existingMeta.degradedReasons)
-      ? existingMeta.degradedReasons
-          .map((reason) => (typeof reason === 'string' ? reason.trim() : ''))
-          .filter((reason) => reason.length > 0)
-      : [];
-    const mergedReasons = Array.from(new Set([...existingReasons, ...degradedReasons])).slice(0, 50);
-    const existingReasonCodes = Array.isArray(existingMeta.degradedReasonCodes)
-      ? existingMeta.degradedReasonCodes
-          .map((reason) => (typeof reason === 'string' ? reason.trim() : ''))
-          .filter((reason) => reason.length > 0)
-      : [];
-    const mergedReasonCodes = Array.from(
-      new Set([...existingReasonCodes, ...degradedReasonCodes]),
-    ).slice(0, 50);
-
-    analysisResult._pipelineQuality = {
-      ...existingMeta,
-      degraded: true,
-      degradedReasons: mergedReasons,
-      degradedReasonCodes: mergedReasonCodes,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await this.prisma.project.update({
-      where: { id: projectId },
-      data: { analysisResult: analysisResult as Prisma.InputJsonValue },
-    });
-  }
-
-  private toFiniteNumber(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) {
-        return parsed;
-      }
-    }
-    return null;
-  }
-
-  private extractStageMetrics(jobType: JobType, outputData: unknown): Record<string, unknown> | null {
-    if (!outputData || typeof outputData !== 'object' || Array.isArray(outputData)) {
-      return null;
-    }
-
-    const payload = outputData as Record<string, unknown>;
-    const updatedAt = new Date().toISOString();
-
-    if (jobType === JobType.GENERATE_IMAGES) {
-      const images = Array.isArray(payload.images)
-        ? (payload.images as Array<Record<string, unknown>>)
-        : [];
-      const totalScenes = Math.max(
-        0,
-        Math.round(this.toFiniteNumber(payload.totalScenes) ?? images.length),
-      );
-      const generatedCount = Math.max(
-        0,
-        Math.round(this.toFiniteNumber(payload.generatedCount) ?? images.length),
-      );
-      const failedCount = Math.max(
-        0,
-        Math.round(this.toFiniteNumber(payload.failedCount) ?? 0),
-      );
-
-      const exposedCount = images.filter((item) => item?.exposed === true).length;
-      const unexposedCount = images.filter((item) => item?.exposed === false).length;
-      const fallbackCount = images.filter((item) => item?.isFallback === true).length;
-
-      return {
-        totalScenes,
-        generatedCount,
-        failedCount,
-        exposedCount,
-        unexposedCount,
-        fallbackCount,
-        exposureRate: totalScenes > 0 ? Number((exposedCount / totalScenes).toFixed(4)) : 0,
-        updatedAt,
-      };
-    }
-
-    if (jobType === JobType.RENDER_VIDEO) {
-      const explicitMetrics =
-        payload.renderMetrics &&
-        typeof payload.renderMetrics === 'object' &&
-        !Array.isArray(payload.renderMetrics)
-          ? (payload.renderMetrics as Record<string, unknown>)
-          : {};
-
-      return {
-        totalSceneCount: Math.max(
-          0,
-          Math.round(
-            this.toFiniteNumber(explicitMetrics.totalSceneCount) ??
-              this.toFiniteNumber(payload.framesUsed) ??
-              0,
-          ),
-        ),
-        postVerseSceneCount: Math.max(
-          0,
-          Math.round(this.toFiniteNumber(explicitMetrics.postVerseSceneCount) ?? 0),
-        ),
-        skippedQualityCount: Math.max(
-          0,
-          Math.round(this.toFiniteNumber(explicitMetrics.skippedQualityCount) ?? 0),
-        ),
-        skippedMissingCount: Math.max(
-          0,
-          Math.round(this.toFiniteNumber(explicitMetrics.skippedMissingCount) ?? 0),
-        ),
-        diversityFillCount: Math.max(
-          0,
-          Math.round(this.toFiniteNumber(explicitMetrics.diversityFillCount) ?? 0),
-        ),
-        continuityFillCount: Math.max(
-          0,
-          Math.round(this.toFiniteNumber(explicitMetrics.continuityFillCount) ?? 0),
-        ),
-        allowUnexposedFallback: explicitMetrics.allowUnexposedFallback === true,
-        unexposedRatio: Math.max(
-          0,
-          Number((this.toFiniteNumber(explicitMetrics.unexposedRatio) ?? 0).toFixed(4)),
-        ),
-        framesUsed: Math.max(0, Math.round(this.toFiniteNumber(payload.framesUsed) ?? 0)),
-        durationSec: Math.max(0, this.toFiniteNumber(payload.duration) ?? 0),
-        updatedAt,
-      };
-    }
-
-    return null;
-  }
-
-  private async appendProjectPipelineStageMetricsMeta(
-    projectId: string,
-    jobType: JobType,
-    outputData: unknown,
-  ): Promise<void> {
-    const stageMetrics = this.extractStageMetrics(jobType, outputData);
-    if (!stageMetrics) {
-      return;
-    }
-
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
-      select: { analysisResult: true },
-    });
-    if (!project) {
-      return;
-    }
-
-    const analysisResult =
-      project.analysisResult &&
-      typeof project.analysisResult === 'object' &&
-      !Array.isArray(project.analysisResult)
-        ? { ...(project.analysisResult as Record<string, unknown>) }
-        : {};
-
-    const existingMeta =
-      analysisResult._pipelineQuality &&
-      typeof analysisResult._pipelineQuality === 'object' &&
-      !Array.isArray(analysisResult._pipelineQuality)
-        ? (analysisResult._pipelineQuality as Record<string, unknown>)
-        : {};
-
-    const existingStageMetrics =
-      existingMeta.stageMetrics &&
-      typeof existingMeta.stageMetrics === 'object' &&
-      !Array.isArray(existingMeta.stageMetrics)
-        ? { ...(existingMeta.stageMetrics as Record<string, unknown>) }
-        : {};
-
-    const stageKey =
-      jobType === JobType.GENERATE_IMAGES
-        ? 'generateImages'
-        : jobType === JobType.RENDER_VIDEO
-          ? 'renderVideo'
-          : jobType.toLowerCase();
-
-    existingStageMetrics[stageKey] = stageMetrics;
-
-    analysisResult._pipelineQuality = {
-      ...existingMeta,
-      stageMetrics: existingStageMetrics,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await this.prisma.project.update({
-      where: { id: projectId },
-      data: { analysisResult: analysisResult as Prisma.InputJsonValue },
-    });
-  }
-
-  private async clearProjectPipelineQualityMeta(projectId: string): Promise<void> {
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
-      select: { analysisResult: true },
-    });
-    if (!project?.analysisResult || typeof project.analysisResult !== 'object' || Array.isArray(project.analysisResult)) {
-      return;
-    }
-
-    const analysisResult = { ...(project.analysisResult as Record<string, unknown>) };
-    if (!Object.prototype.hasOwnProperty.call(analysisResult, '_pipelineQuality')) {
-      return;
-    }
-
-    delete analysisResult._pipelineQuality;
-    await this.prisma.project.update({
-      where: { id: projectId },
-      data: { analysisResult: analysisResult as Prisma.InputJsonValue },
-    });
+    return this.pipelineStatusService.getPipelineStatus(projectId);
   }
 
   async cancelPipeline(projectId: string): Promise<void> {
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
-    });
-
-    if (!project) throw new NotFoundException(`Project with id ${projectId} not found`);
-
-    await this.prisma.$transaction([
-      this.prisma.job.updateMany({
-        where: {
-          projectId,
-          status: { in: [JobStatus.PENDING, JobStatus.PROCESSING] },
-        },
-        data: { status: JobStatus.CANCELLED },
-      }),
-      this.prisma.project.update({
-        where: { id: projectId },
-        data: { status: ProjectStatus.CANCELLED },
-      }),
-    ]);
-    this.logger.log(`Pipeline cancelled for project ${projectId}`);
-  }
-
-  async enqueueDeadLetter(entry: DeadLetterEntry): Promise<void> {
-    await this.deadLetterQueue.add('dead-letter', entry, {
-      removeOnComplete: 500,
-      removeOnFail: 1000,
-    });
-  }
-
-  async listDeadLettersForUser(userId: string, limit = 25): Promise<Record<string, unknown>> {
-    const safeLimit = Math.max(1, Math.min(limit, 100));
-    const jobs = await this.deadLetterQueue.getJobs(
-      ['waiting', 'active', 'delayed', 'completed', 'failed'],
-      0,
-      safeLimit - 1,
-      true,
-    );
-
-    const projectIds = Array.from(
-      new Set(
-        jobs
-          .map((job) =>
-            job.data && typeof job.data === 'object'
-              ? (job.data as Record<string, unknown>).projectId
-              : null,
-          )
-          .filter((value): value is string => typeof value === 'string'),
-      ),
-    );
-
-    const ownedProjects = await this.prisma.project.findMany({
-      where: { userId, id: { in: projectIds } },
-      select: { id: true },
-    });
-    const ownedProjectIds = new Set(ownedProjects.map((project) => project.id));
-
-    const ownedItems = jobs.filter((job) => {
-      const projectId =
-        job.data && typeof job.data === 'object'
-          ? (job.data as Record<string, unknown>).projectId
-          : null;
-      return typeof projectId === 'string' && ownedProjectIds.has(projectId);
-    });
-
-    const items = await Promise.all(
-      ownedItems.map(async (job) => ({
-        deadLetterId: String(job.id),
-        status: await job.getState(),
-        name: job.name,
-        attemptsMade: job.attemptsMade,
-        failedReason: job.failedReason || null,
-        timestamp: job.timestamp,
-        data: job.data,
-      })),
-    );
-
-    return {
-      total: items.length,
-      items,
-    };
-  }
-
-  async replayDeadLetterForUser(deadLetterId: string, userId: string): Promise<Record<string, unknown>> {
-    const deadLetterJob = await this.deadLetterQueue.getJob(deadLetterId);
-    if (!deadLetterJob) {
-      throw new NotFoundException(`Dead-letter job ${deadLetterId} not found`);
-    }
-
-    const data =
-      deadLetterJob.data && typeof deadLetterJob.data === 'object'
-        ? (deadLetterJob.data as Record<string, unknown>)
-        : {};
-    const projectId = typeof data.projectId === 'string' ? data.projectId : '';
-    if (!projectId) {
-      throw new BadRequestException('Dead-letter payload does not include projectId');
-    }
-
-    await this.assertProjectOwnership(projectId, userId);
-
-    const originalJobId = typeof data.jobId === 'string' ? data.jobId : '';
-    if (!originalJobId) {
-      throw new BadRequestException('Dead-letter payload does not include original jobId');
-    }
-
-    const originalJob = await this.prisma.job.findUnique({ where: { id: originalJobId } });
-    if (!originalJob) {
-      throw new NotFoundException(`Original job ${originalJobId} not found`);
-    }
-
-    if (originalJob.status === JobStatus.PENDING || originalJob.status === JobStatus.PROCESSING) {
-      return {
-        replayed: false,
-        reason: `Job ${originalJobId} is already ${originalJob.status}`,
-        jobId: originalJobId,
-      };
-    }
-
-    const replayed = await this.prisma.job.update({
-      where: { id: originalJob.id },
-      data: {
-        status: JobStatus.PENDING,
-        progress: 0,
-        currentStep: 'Replay requested from dead-letter queue',
-        errorMessage: null,
-        workerId: null,
-      },
-    });
-
-    await this.dispatchJob(replayed);
-    await deadLetterJob.updateData({
-      ...data,
-      replayedAt: new Date().toISOString(),
-      replayedOriginalJobId: originalJobId,
-    });
-
-    return {
-      replayed: true,
-      deadLetterId,
-      jobId: replayed.id,
-      projectId: replayed.projectId,
-      type: replayed.type,
-    };
+    await this.pipelineCancellationService.cancelPipeline(projectId);
   }
 
   async triggerStyleLoraTraining(
@@ -1295,193 +448,24 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     style: string,
     likesCount: number,
   ): Promise<Job | null> {
-    const normalizedStyle = this.normalizeStyle(style);
-    if (!normalizedStyle || likesCount < 50) {
-      return null;
-    }
-
-    const activeJob = await this.prisma.job.findFirst({
-      where: {
-        type: JobType.TRAIN_LORA,
-        status: { in: [JobStatus.PENDING, JobStatus.PROCESSING] },
-        inputData: {
-          path: ['style'],
-          equals: normalizedStyle,
-        },
-      },
-      select: { id: true },
-    });
-
-    if (activeJob) {
-      this.logger.log(
-        `Skipping TRAIN_LORA enqueue for style "${normalizedStyle}": active job ${activeJob.id} already exists`,
-      );
-      return null;
-    }
-
-    const latestCompleted = await this.prisma.job.findFirst({
-      where: {
-        type: JobType.TRAIN_LORA,
-        status: JobStatus.COMPLETED,
-        inputData: {
-          path: ['style'],
-          equals: normalizedStyle,
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-      select: { outputData: true },
-    });
-
-    const lastLikesUsed = this.extractLikesUsed(latestCompleted?.outputData);
-    if (likesCount < lastLikesUsed + 50) {
-      this.logger.log(
-        `Skipping TRAIN_LORA for style "${normalizedStyle}": likes=${likesCount}, lastTrainingLikes=${lastLikesUsed}`,
-      );
-      return null;
-    }
-
-    const trainJob = await this.create({
-      projectId,
-      type: JobType.TRAIN_LORA,
-      inputData: {
-        style: normalizedStyle,
-        likesCount,
-        triggeredAt: new Date().toISOString(),
-      },
-    });
-
-    await this.dispatchJob(trainJob);
-    this.logger.log(
-      `TRAIN_LORA queued for style "${normalizedStyle}" (likes=${likesCount}) via project ${projectId}`,
-    );
-
-    return trainJob;
+    return this.styleLoraService.triggerStyleLoraTraining(projectId, style, likesCount);
   }
 
   async updateStyleLoraConfig(
     style: string,
     payload: { loraFilename: string; loraPath: string; likesUsed?: number },
   ): Promise<void> {
-    const normalizedStyle = this.normalizeStyle(style);
-    if (!normalizedStyle) {
-      return;
-    }
-
-    const config = await this.readGenerationConfig();
-    const styleLoras = (config.styleLoras ?? {}) as Record<string, StyleLoraConfigEntry>;
-
-    styleLoras[normalizedStyle] = {
-      loraFilename: payload.loraFilename,
-      loraPath: payload.loraPath,
-      likesUsed: payload.likesUsed,
-      updatedAt: new Date().toISOString(),
-    };
-
-    config.styleLoras = styleLoras;
-    await this.writeGenerationConfig(config);
-
-    this.logger.log(
-      `Generation config updated for style "${normalizedStyle}" with LoRA ${payload.loraFilename}`,
-    );
-  }
-
-  private extractLikesUsed(outputData: unknown): number {
-    if (!outputData || typeof outputData !== 'object') {
-      return 0;
-    }
-
-    const likes = (outputData as Record<string, unknown>).likesCount;
-    return typeof likes === 'number' && Number.isFinite(likes) ? likes : 0;
-  }
-
-  private normalizeStyle(style: string): string {
-    return style?.trim().toLowerCase() || '';
-  }
-
-  private async readGenerationConfig(): Promise<Record<string, unknown>> {
-    try {
-      const raw = await fs.readFile(this.generationConfigPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        return parsed;
-      }
-      return {};
-    } catch {
-      return {};
-    }
-  }
-
-  private async writeGenerationConfig(config: Record<string, unknown>): Promise<void> {
-    const dirPath = path.dirname(this.generationConfigPath);
-    await fs.mkdir(dirPath, { recursive: true });
-    await fs.writeFile(this.generationConfigPath, JSON.stringify(config, null, 2), 'utf-8');
-  }
-
-  private getQueueJobOptions(type: JobType, jobId: string): JobsOptions {
-    const envConfig = RETRY_ENV_CONFIG[type];
-    const policy = envConfig
-      ? {
-          attempts: this.parsePositiveIntEnv(envConfig.attemptsEnv, envConfig.attemptsDefault),
-          delayMs: this.parsePositiveIntEnv(envConfig.delayEnv, envConfig.delayDefault),
-        }
-      : { attempts: 1, delayMs: 0 };
-    return {
-      jobId,
-      attempts: policy.attempts,
-      backoff:
-        policy.attempts > 1
-          ? {
-              type: 'exponential',
-              delay: policy.delayMs,
-            }
-          : undefined,
-      removeOnComplete: 200,
-      removeOnFail: 500,
-    };
+    return this.styleLoraService.updateStyleLoraConfig(style, payload);
   }
 
   private async dispatchJob(job: Job): Promise<void> {
-    const inputData =
-      job.inputData && typeof job.inputData === 'object'
-        ? (job.inputData as Record<string, unknown>)
-        : {};
-    const style = inputData.style;
-    const correlationId =
-      typeof inputData.correlationId === 'string' && inputData.correlationId.trim()
-        ? inputData.correlationId.trim()
-        : `${job.projectId}:${job.id}:${randomUUID().slice(0, 8)}`;
+    await this.jobDispatchService.dispatch(job, async (finalizeJob) => {
+      await this.markAsCompleted(finalizeJob.id, { finalized: true });
+      await this.advancePipeline(finalizeJob.projectId);
+    });
+  }
 
-    const payload = {
-      jobId: job.id,
-      projectId: job.projectId,
-      style: typeof style === 'string' ? style : undefined,
-      correlationId,
-    };
-    const queueOptions = this.getQueueJobOptions(job.type, job.id);
-
-    switch (job.type) {
-      case JobType.YOUTUBE_DOWNLOAD:
-        await this.youtubeDownloadQueue.add('process', payload, queueOptions);
-        break;
-      case JobType.TRANSCRIPTION:
-        await this.transcriptionQueue.add('process', payload, queueOptions);
-        break;
-      case JobType.ANALYZE_LYRICS:
-        await this.analysisQueue.add('process', payload, queueOptions);
-        break;
-      case JobType.GENERATE_IMAGES:
-        await this.imageGenerationQueue.add('process', payload, queueOptions);
-        break;
-      case JobType.RENDER_VIDEO:
-        await this.videoRenderQueue.add('process', payload, queueOptions);
-        break;
-      case JobType.TRAIN_LORA:
-        await this.trainLoraQueue.add('process', payload, queueOptions);
-        break;
-      case JobType.FINALIZE:
-        await this.markAsCompleted(job.id, { finalized: true });
-        await this.advancePipeline(job.projectId);
-        break;
-    }
+  async dispatchPipelineJob(job: Job): Promise<void> {
+    await this.dispatchJob(job);
   }
 }

@@ -15,7 +15,9 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JobsService } from './jobs.service';
+import { DeadLetterOrchestratorService } from './services/dead-letter-orchestrator.service';
 import { CreateJobDto, UpdateJobDto } from './dto';
 import {
   AuthenticatedRequest,
@@ -25,9 +27,12 @@ import {
 
 @Controller('jobs')
 @UseGuards(JwtAuthGuard)
+@ApiTags('jobs')
+@ApiBearerAuth()
 export class JobsController {
   constructor(
     private readonly jobsService: JobsService,
+    private readonly deadLetterOrchestrator: DeadLetterOrchestratorService,
     private readonly authService: AuthService,
   ) {}
 
@@ -48,7 +53,7 @@ export class JobsController {
     @Query('limit', new DefaultValuePipe(25), ParseIntPipe) limit: number,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.listDeadLettersForUser(userId, limit);
+    return this.deadLetterOrchestrator.listForUser(userId, limit);
   }
 
   @Post('dead-letter/:id/replay')
@@ -58,7 +63,7 @@ export class JobsController {
     @Param('id') id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.replayDeadLetterForUser(id, userId);
+    return this.deadLetterOrchestrator.replayForUser(id, userId);
   }
 
   @Get(':id')
@@ -93,6 +98,7 @@ export class JobsController {
 
   @Post('pipeline/:id/start')
   @Throttle(THROTTLE_RULES.jobsPipelineStart)
+  @ApiOperation({ summary: 'Start (or resume) pipeline for a project' })
   startPipeline(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -102,6 +108,7 @@ export class JobsController {
   }
 
   @Get('pipeline/:id')
+  @ApiOperation({ summary: 'Get pipeline status for a project' })
   getPipelineStatus(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -112,6 +119,7 @@ export class JobsController {
 
   @Post('pipeline/:id/cancel')
   @Throttle(THROTTLE_RULES.jobsPipelineCancel)
+  @ApiOperation({ summary: 'Cancel project pipeline' })
   cancelPipeline(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,

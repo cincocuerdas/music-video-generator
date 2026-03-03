@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { JobsService } from '../jobs.service';
+import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestrator.service';
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
@@ -29,6 +30,7 @@ export class VideoRenderProcessor extends WorkerHost {
 
   constructor(
     private readonly jobsService: JobsService,
+    private readonly deadLetterOrchestrator: DeadLetterOrchestratorService,
     private readonly pythonRunnerService: PythonRunnerService,
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
@@ -176,7 +178,7 @@ export class VideoRenderProcessor extends WorkerHost {
         },
       });
       await this.jobsService.markAsFailed(jobId, message);
-      await this.jobsService.enqueueDeadLetter({
+      await this.deadLetterOrchestrator.enqueue({
         sourceQueue: QUEUE_NAMES.VIDEO_RENDER,
         projectId,
         jobId,

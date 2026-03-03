@@ -1,6 +1,7 @@
 import {
   assessScriptResult,
   classifyJobError,
+  isQuotaDegradedResult,
   validateScriptResultContract,
 } from './retry.utils';
 
@@ -11,6 +12,7 @@ describe('assessScriptResult', () => {
       success: false,
       degraded: false,
       degradedReasons: [],
+      errorCode: 'script.failed',
       error: 'no useful output',
     });
 
@@ -74,6 +76,21 @@ describe('validateScriptResultContract', () => {
     expect(validation.valid).toBe(false);
     expect(validation.issues).toContain('result must be a JSON object');
   });
+
+  it('requires errorCode for failed payloads', () => {
+    const validation = validateScriptResultContract({
+      status: 'failed',
+      success: false,
+      degraded: false,
+      degradedReasons: [],
+      error: 'missing code',
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.issues).toContain(
+      'errorCode must be a non-empty string when status=failed or success=false',
+    );
+  });
 });
 
 describe('classifyJobError', () => {
@@ -93,6 +110,33 @@ describe('classifyJobError', () => {
 
     expect(classification.category).toBe('transient');
     expect(classification.retryable).toBe(true);
+  });
+});
+
+describe('isQuotaDegradedResult', () => {
+  it('detects quota/rate-limit degraded reasons', () => {
+    const hasQuota = isQuotaDegradedResult({
+      status: 'degraded',
+      success: true,
+      degraded: true,
+      degradedReasons: [
+        "gemini-failed: HTTP 429 calling model 'models/gemini-2.5-flash': quota exceeded",
+      ],
+    });
+
+    expect(hasQuota).toBe(true);
+  });
+
+  it('returns false for non-quota degraded payloads', () => {
+    const hasQuota = isQuotaDegradedResult({
+      status: 'degraded',
+      success: true,
+      degraded: true,
+      degradedReasons: ['youtube_subtitles_unavailable'],
+      warning: 'fallback subtitles unavailable',
+    });
+
+    expect(hasQuota).toBe(false);
   });
 });
 

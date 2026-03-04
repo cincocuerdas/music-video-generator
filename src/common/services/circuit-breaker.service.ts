@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { parsePositiveIntEnv } from '../utils/env-parsers';
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
@@ -25,11 +26,11 @@ interface CircuitRuntimeEntry {
 @Injectable()
 export class CircuitBreakerService {
   private readonly entries = new Map<string, CircuitRuntimeEntry>();
-  private readonly failureThreshold = this.parsePositiveIntEnv(
+  private readonly failureThreshold = parsePositiveIntEnv(
     'CIRCUIT_BREAKER_FAILURE_THRESHOLD',
     3,
   );
-  private readonly cooldownMs = this.parsePositiveIntEnv(
+  private readonly cooldownMs = parsePositiveIntEnv(
     'CIRCUIT_BREAKER_COOLDOWN_MS',
     60_000,
   );
@@ -129,12 +130,4 @@ export class CircuitBreakerService {
     return created;
   }
 
-  private parsePositiveIntEnv(key: string, fallback: number): number {
-    const raw = process.env[key];
-    if (!raw) {
-      return fallback;
-    }
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-  }
 }

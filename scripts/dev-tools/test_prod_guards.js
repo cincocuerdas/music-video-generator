@@ -223,6 +223,12 @@ async function main() {
       expected: 'Missing Redis configuration. Set REDIS_URL or REDIS_HOST/REDIS_PORT.',
     },
     {
+      name: 'weak_database_credentials',
+      env: { DATABASE_URL: 'postgresql://postgres:postgres@db.internal:5432/musicvideo' },
+      expected:
+        'Unsafe production configuration: DATABASE_URL uses weak/default database credentials.',
+    },
+    {
       name: 'loopback_database_url',
       env: { DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:5432/musicvideo' },
       expected:
@@ -233,6 +239,12 @@ async function main() {
       env: { REDIS_URL: 'redis://localhost:6379' },
       expected:
         'Unsafe production configuration: REDIS_URL cannot use localhost/loopback host in production.',
+    },
+    {
+      name: 'redis_url_missing_password',
+      env: { REDIS_URL: 'redis://redis.internal:6379' },
+      expected:
+        'Unsafe production configuration: REDIS_URL must include a strong password.',
     },
     {
       name: 'missing_gemini_key',

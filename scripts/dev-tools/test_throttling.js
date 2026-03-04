@@ -136,12 +136,18 @@ async function apiRequestRawWithRetry(
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      return await apiRequestRaw(url, init, timeoutMs);
+      const response = await apiRequestRaw(url, init, timeoutMs);
+      const isServerError = response.status >= 500;
+      const isLast = attempt >= retries;
+      if (!isServerError || isLast) {
+        return response;
+      }
+      await sleep(retryDelayMs * (attempt + 1));
+      continue;
     } catch (error) {
       lastError = error;
-      const isAbort = error?.name === 'AbortError' || /aborted/i.test(error?.message || '');
       const isLast = attempt >= retries;
-      if (!isAbort || isLast) {
+      if (isLast) {
         throw error;
       }
       await sleep(retryDelayMs * (attempt + 1));

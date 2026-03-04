@@ -35,7 +35,16 @@ export class LoggingInterceptor implements NestInterceptor {
     return next.handle().pipe(
       tap(() => {
         const responseTime = Date.now() - now;
-        this.logger.log(`[cid=${correlationId}] ${method} ${url} - ${responseTime}ms`);
+        this.logger.log(
+          JSON.stringify({
+            event: 'http.request',
+            cid: correlationId,
+            method,
+            url,
+            statusCode: response?.statusCode,
+            durationMs: responseTime,
+          }),
+        );
       }),
     );
   }

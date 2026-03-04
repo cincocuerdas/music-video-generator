@@ -39,8 +39,10 @@ function getProdGuardBaseEnv() {
     PORT: process.env.PROD_GUARD_PORT || '3901',
     DATABASE_URL:
       process.env.PROD_GUARD_DATABASE_URL ||
-      'postgresql://postgres:postgres@db.internal:5432/musicvideo',
-    REDIS_URL: process.env.PROD_GUARD_REDIS_URL || 'redis://redis.internal:6379',
+      'postgresql://mvg_admin:strong_db_password_for_prod_guard_tests@db.internal:5432/musicvideo',
+    REDIS_URL:
+      process.env.PROD_GUARD_REDIS_URL ||
+      'redis://:strong_redis_password_for_prod_guard_tests@redis.internal:6379',
     JWT_SECRET:
       process.env.PROD_GUARD_JWT_SECRET ||
       'this_is_a_strong_jwt_secret_for_prod_guard_tests_12345',

@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ProjectsService } from './projects.service';
 import {
   AuthenticatedRequest,
@@ -31,6 +32,8 @@ import {
 
 @Controller('projects')
 @UseGuards(JwtAuthGuard)
+@ApiTags('projects')
+@ApiBearerAuth()
 export class ProjectsController {
   constructor(
     private readonly projectsService: ProjectsService,
@@ -39,6 +42,7 @@ export class ProjectsController {
 
   @Post()
   @Throttle(THROTTLE_RULES.projectsCreate)
+  @ApiOperation({ summary: 'Create a project' })
   create(
     @Req() req: AuthenticatedRequest,
     @Body() createProjectDto: CreateProjectDto,
@@ -48,6 +52,7 @@ export class ProjectsController {
   }
 
   @Get()
+  @ApiOperation({ summary: 'List user projects (paginated)' })
   findAll(
     @Req() req: AuthenticatedRequest,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -87,6 +92,7 @@ export class ProjectsController {
 
   @Post(':id/generate')
   @Throttle(THROTTLE_RULES.projectsGenerate)
+  @ApiOperation({ summary: 'Start generation pipeline for a project' })
   startGeneration(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -135,6 +141,7 @@ export class ProjectsController {
 
   @Post(':id/feedback')
   @Throttle(THROTTLE_RULES.projectsFeedback)
+  @ApiOperation({ summary: 'Submit scene feedback (like/dislike)' })
   addFeedback(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,

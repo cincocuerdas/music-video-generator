@@ -12,7 +12,16 @@ import re
 import time
 import urllib.request
 import urllib.error
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+import random
+from result_json import emit_result as shared_emit_result
+from env_utils import parse_int_env, parse_positive_int_env
+from gemini_semaphore import (
+    backoff_with_jitter,
+    call_with_gemini_guard,
+    GEMINI_COOLDOWN,
+    is_gemini_rate_limit_error_generic,
+)
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -40,12 +49,20 @@ TUNED_MODEL_CONFIG_PATH = os.getenv(
     "GEMINI_TUNED_MODEL_CONFIG_PATH",
     os.path.join(root_dir, "storage", "gemini-tuned-model.json")
 )
-MAX_ANALYSIS_SCENES = int(os.getenv("ANALYSIS_MAX_SCENES", "15"))
+MAX_ANALYSIS_SCENES = parse_positive_int_env("ANALYSIS_MAX_SCENES", 15)
+ANALYSIS_PROMPT_TEMPLATE_PATH = os.path.join(current_dir, "templates", "analyze_lyrics_prompt.txt")
+_PROMPT_TEMPLATE_CACHE = None
+ANALYZE_LYRICS_STAGE_TIMEOUT_SEC = parse_positive_int_env("ANALYZE_LYRICS_STAGE_TIMEOUT_SEC", 240)
+MULTILINGUAL_HIGH_CONTEXT_LANGUAGES = {"ko", "ja", "zh"}
 
 
 def get_db_connection():
     from db_utils import get_db_connection as _get_db_connection
     return _get_db_connection()
+
+
+def emit_result(payload):
+    return shared_emit_result(payload, default_error_code="analysis")
 
 
 def get_gemini_api_base_url() -> str:
@@ -55,19 +72,121 @@ def get_gemini_api_base_url() -> str:
     return value.rstrip("/")
 
 
-def emit_result(payload):
-    output = json.dumps(payload, ensure_ascii=False)
-    print(output)
-    print(f"RESULT_JSON:{output}", file=sys.stderr)
+def load_analysis_prompt_template() -> str:
+    global _PROMPT_TEMPLATE_CACHE
+    if _PROMPT_TEMPLATE_CACHE is None:
+        with open(ANALYSIS_PROMPT_TEMPLATE_PATH, "r", encoding="utf-8") as f:
+            _PROMPT_TEMPLATE_CACHE = f.read()
+    return _PROMPT_TEMPLATE_CACHE
+
+
+def build_analysis_prompt(style_hint: str, title_hint: str, lyrics_content: str) -> str:
+    template = load_analysis_prompt_template()
+    return (
+        template.replace("{{STYLE_HINT}}", style_hint)
+        .replace("{{TITLE_HINT}}", title_hint)
+        .replace("{{LYRICS_CONTENT}}", lyrics_content)
+    )
+
+
+def detect_primary_language(text: str) -> str:
+    sample = (text or "").strip()
+    if not sample:
+        return "unknown"
+
+    # Script-based fast path.
+    if re.search(r"[\uac00-\ud7af]", sample):
+        return "ko"
+    if re.search(r"[\u3040-\u30ff]", sample):
+        return "ja"
+    if re.search(r"[\u4e00-\u9fff]", sample):
+        return "zh"
+
+    tokens = re.findall(r"[A-Za-zÀ-ÿ']+", sample.lower())
+    if not tokens:
+        return "unknown"
+
+    lang_stopwords = {
+        "en": {"the", "and", "you", "that", "with", "for", "are", "this", "your", "from"},
+        "es": {"que", "con", "para", "como", "pero", "una", "las", "los", "por", "del"},
+        "pt": {"que", "com", "para", "como", "uma", "dos", "das", "por", "não", "você"},
+    }
+
+    scores = {lang: 0 for lang in lang_stopwords}
+    for token in tokens:
+        for lang, stopwords in lang_stopwords.items():
+            if token in stopwords:
+                scores[lang] += 1
+
+    top_lang = max(scores, key=scores.get)
+    if scores[top_lang] <= 0:
+        return "unknown"
+    return top_lang
+
+
+def build_language_hint(language: str) -> str:
+    normalized = (language or "unknown").strip().lower()
+    hints = {
+        "ko": (
+            "LANGUAGE ROUTE: Korean lyrics. Keep semantic meaning and emotional intent from Korean text. "
+            "Do NOT invent unrelated western metaphors. Produce visual prompts in ENGLISH."
+        ),
+        "ja": (
+            "LANGUAGE ROUTE: Japanese lyrics. Preserve context and concrete nouns from Japanese text. "
+            "Avoid generic scenes; keep imagery literal. Produce visual prompts in ENGLISH."
+        ),
+        "zh": (
+            "LANGUAGE ROUTE: Chinese lyrics. Preserve literal meaning and narrative continuity. "
+            "Avoid abstract substitutions. Produce visual prompts in ENGLISH."
+        ),
+        "es": (
+            "LANGUAGE ROUTE: Spanish lyrics. Keep colloquial and regional meaning while remaining literal. "
+            "Produce visual prompts in ENGLISH."
+        ),
+        "pt": (
+            "LANGUAGE ROUTE: Portuguese lyrics. Keep literal scene meaning and action verbs explicit. "
+            "Produce visual prompts in ENGLISH."
+        ),
+        "en": "LANGUAGE ROUTE: English lyrics.",
+    }
+    return hints.get(normalized, "LANGUAGE ROUTE: Unknown language; preserve literal meaning and avoid hallucinations.")
+
+
+def to_reason_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        normalized: List[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                normalized.append(text)
+        return normalized
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return []
+
+
+def ensure_stage_deadline(deadline_ts: Optional[float], phase: str) -> None:
+    if deadline_ts is None:
+        return
+    if time.time() > deadline_ts:
+        raise TimeoutError(f"analysis timeout during {phase}")
 
 def with_result_status(analysis: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(analysis) if isinstance(analysis, dict) else {}
     fallback_reason = str(payload.get("_fallbackReason") or "").strip()
     model_name = str(payload.get("_model") or "").strip().lower()
-    degraded = bool(fallback_reason) or model_name.startswith("fallback")
+    degraded_reasons = to_reason_list(payload.get("degradedReasons"))
+    if fallback_reason and fallback_reason not in degraded_reasons:
+        degraded_reasons.append(fallback_reason)
+    if model_name.startswith("fallback") and not degraded_reasons:
+        degraded_reasons.append("analysis.model_fallback")
+
+    degraded = len(degraded_reasons) > 0
     payload["status"] = "degraded" if degraded else "success"
     payload["success"] = True
     payload["degraded"] = degraded
+    payload["degradedReasons"] = degraded_reasons
     return payload
 
 def get_project_lyrics(project_id: str) -> dict:
@@ -137,7 +256,7 @@ def get_gemini_model(api_key: str) -> str:
     base_url = get_gemini_api_base_url()
     list_url = f"{base_url}/v1beta/models?key={api_key}"
     chosen_model = "models/gemini-1.5-flash"
-    list_timeout_sec = int(os.getenv("GEMINI_MODELS_TIMEOUT_SEC", "10"))
+    list_timeout_sec = parse_positive_int_env("GEMINI_MODELS_TIMEOUT_SEC", 10)
 
     try:
         with urllib.request.urlopen(list_url, timeout=list_timeout_sec) as response:
@@ -170,7 +289,12 @@ def get_tuned_gemini_model() -> str:
         print(f"Warning: could not read tuned model config: {e}", file=sys.stderr)
         return ""
 
-def request_gemini_generate(model: str, api_key: str, prompt_text: str) -> dict:
+def request_gemini_generate(
+    model: str,
+    api_key: str,
+    prompt_text: str,
+    deadline_ts: Optional[float] = None,
+) -> dict:
     """Call Gemini generateContent for a specific model."""
     base_url = get_gemini_api_base_url()
     generate_url = f"{base_url}/v1beta/{model}:generateContent?key={api_key}"
@@ -178,11 +302,12 @@ def request_gemini_generate(model: str, api_key: str, prompt_text: str) -> dict:
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt_text}]}]}
     json_data = json.dumps(data).encode('utf-8')
-    timeout_sec = int(os.getenv("GEMINI_REQUEST_TIMEOUT_SEC", "45"))
-    retries = int(os.getenv("GEMINI_REQUEST_RETRIES", "2"))
+    timeout_sec = parse_positive_int_env("GEMINI_REQUEST_TIMEOUT_SEC", 45)
+    retries = max(0, parse_int_env("GEMINI_REQUEST_RETRIES", 2))
 
     last_error = None
     for attempt in range(retries + 1):
+        ensure_stage_deadline(deadline_ts, f"gemini_request:{model}:attempt_{attempt + 1}")
         req = urllib.request.Request(generate_url, data=json_data, headers=headers, method='POST')
         try:
             with urllib.request.urlopen(req, timeout=timeout_sec) as response:
@@ -199,21 +324,42 @@ def request_gemini_generate(model: str, api_key: str, prompt_text: str) -> dict:
             if attempt >= retries:
                 raise last_error
 
-        sleep_for = min(2 ** attempt, 8)
+        raw_backoff = min(2 ** attempt, 8)
+        sleep_for = backoff_with_jitter(raw_backoff)
+        ensure_stage_deadline(deadline_ts, f"gemini_backoff:{model}:attempt_{attempt + 1}")
+        # Activate cross-process cooldown on 429 so generate_images.py knows
+        if isinstance(last_error, Exception) and '429' in str(last_error):
+            GEMINI_COOLDOWN.activate(max(sleep_for, 30))
         time.sleep(sleep_for)
 
     if last_error:
         raise last_error
     raise Exception(f"Unknown error calling model '{model}'")
 
-def build_candidate_models(api_key: str) -> list:
-    """Use tuned model first, then base model fallback."""
+def build_candidate_models(api_key: str, primary_language: str = "unknown") -> list:
+    """Use tuned model first, language-aware candidates, then discovered model."""
     base_model = get_gemini_model(api_key)
     tuned_model = get_tuned_gemini_model()
+    multilingual_route = primary_language in MULTILINGUAL_HIGH_CONTEXT_LANGUAGES
+    candidate_env_key = (
+        "ANALYSIS_GEMINI_MODEL_CANDIDATES_MULTILINGUAL"
+        if multilingual_route
+        else "ANALYSIS_GEMINI_MODEL_CANDIDATES"
+    )
+    default_candidates = (
+        "models/gemini-2.5-pro,models/gemini-2.5-flash,models/gemini-2.0-flash,models/gemini-1.5-flash"
+        if multilingual_route
+        else "models/gemini-2.5-flash,models/gemini-2.5-flash-lite,models/gemini-2.0-flash,models/gemini-1.5-flash"
+    )
+    raw_candidates = os.getenv(candidate_env_key, default_candidates)
+    configured_models = [token.strip() for token in raw_candidates.split(",") if token.strip()]
     models = []
 
     if tuned_model:
         models.append(tuned_model)
+    for candidate in configured_models:
+        if candidate and candidate not in models:
+            models.append(candidate)
     if base_model and base_model not in models:
         models.append(base_model)
 
@@ -558,7 +704,15 @@ def split_long_scenes(scenes: list) -> list:
             
     return new_scenes
 
-def analyze_with_gemini(lyrics: str, visual_style: str, api_key: str, segments: list = None, song_title: str = "") -> dict:
+def analyze_with_gemini(
+    lyrics: str,
+    visual_style: str,
+    api_key: str,
+    segments: list = None,
+    song_title: str = "",
+    primary_language: str = "unknown",
+    deadline_ts: Optional[float] = None,
+) -> dict:
     """Analyze lyrics using Gemini AI"""
     if not api_key:
         return build_fallback_analysis(
@@ -569,9 +723,11 @@ def analyze_with_gemini(lyrics: str, visual_style: str, api_key: str, segments: 
             reason="missing-gemini-api-key",
         )
 
-    candidate_models = build_candidate_models(api_key)
+    candidate_models = build_candidate_models(api_key, primary_language=primary_language)
 
-    style_hint = f"The visual style should be: {visual_style}" if visual_style else ""
+    language_hint = build_language_hint(primary_language)
+    style_hint_base = f"The visual style should be: {visual_style}" if visual_style else ""
+    style_hint = f"{style_hint_base}\n{language_hint}".strip()
     title_hint = f"SONG TITLE: {song_title}" if song_title else "SONG TITLE: Unknown"
 
     # Construct lyrics text with segments
@@ -594,173 +750,11 @@ def analyze_with_gemini(lyrics: str, visual_style: str, api_key: str, segments: 
     else:
         lyrics_content = lyrics
 
-    prompt_text = f"""
-    You are an expert music video director. Your job is to create visual prompts for AI image generation based on song lyrics.
-    
-    LANGUAGE: The lyrics may be in ANY language. Understand the meaning and create prompts in ENGLISH.
-
-    ===== CRITICAL RULES - FOLLOW EXACTLY =====
-    
-    RULE 1 - EXTREME LITERALISM (MOST IMPORTANT):
-    Every visual prompt MUST show EXACTLY what the lyrics describe. NO metaphors, NO abstractions.
-    - If lyrics say "beat that drum" → show a person PLAYING A DRUM
-    - If lyrics say "walking in the rain" → show a person WALKING IN RAIN
-    - If lyrics say "dancing" → show a person DANCING
-    - NEVER use generic "person gazing into distance" - that's LAZY and WRONG
-
-    RULE 2 - EACH SCENE MUST BE UNIQUE:
-    EVERY scene must have a DIFFERENT visual prompt. Never repeat the same description.
-    If the lyrics repeat, show the same concept from a DIFFERENT ANGLE or with DIFFERENT DETAILS.
-
-    RULE 3 - MATCH THE MOOD:
-    If the song is ENERGETIC → show DYNAMIC poses, movement, action
-    If the song is SAD → show melancholic expressions, rain, dark colors
-    If the song is HAPPY → show smiling faces, bright colors, celebration
-
-    RULE 4 - INCLUDE SPECIFIC OBJECTS FROM LYRICS:
-    If the song mentions: drum, guitar, car, phone, rain, sun, etc.
-    That object MUST appear in the scene. Don't ignore concrete nouns.
-    
-    RULE 5 - NO TEXT IN IMAGES:
-    Never ask for text, signs, letters, or words.
-
-    RULE 6 - QUALITY KEYWORDS:
-    Always end prompts with: "wearing casual clothes, portrait shot, face focus, detailed face, high quality, dramatic lighting, cinematic"
-
-    RULE 7 - PERSON COUNT MUST MATCH THE LYRICS (CRITICAL):
-    The number of people in each scene MUST follow the verse meaning.
-    - If the verse is SINGULAR (I, me, my, he, she, one person), show EXACTLY ONE person.
-      Use tags like "solo, 1girl" or "solo, 1boy".
-    - If the verse is PLURAL (we, us, our, they, friends, people, crowd, couple, two), show MULTIPLE people.
-      Use tags like "two people", "group of friends", "crowd", or "couple" when the lyrics require it.
-    - For plural scenes, prefer SMALL COHERENT GROUPS (2 to 6 people) unless lyrics explicitly require a massive crowd/protest.
-    - In multi-person scenes, require clear foreground faces and natural hands (five fingers per hand), but DO NOT force hand close-ups.
-    - NEVER force "solo" when the lyrics clearly describe plural actions.
-    - Keep one clear main action and composition focus even in plural scenes.
-
-    RULE 8 - MANDATORY CLOTHING (CRITICAL):
-    ALL people in scenes MUST be FULLY CLOTHED. Always specify clothing:
-    - "wearing a t-shirt and jeans"
-    - "dressed in casual clothes"
-    - "wearing a hoodie"
-    - "in formal attire"
-    NEVER create prompts with nude, shirtless, or underdressed people.
-
-    RULE 9 - NATURE KEYWORDS REQUIRE NATURE SCENES:
-    If lyrics mention: "nature", "forest", "ocean", "sea", "tree", "mountain", "sky", "sun", "mystic"
-    Then the prompt MUST show NATURAL landscapes. NO cities, NO streets, NO buildings.
-
-    RULE 10 - MANDATORY LOCATION INCLUSION (CRITICAL):
-    BEFORE creating any prompts, identify if the song mentions ANY location (city, country, landmark).
-    If the song title, lyrics, or theme includes a location like "Paris", "London", "Jamaica", etc.:
-    - EVERY SINGLE PROMPT must include that location's iconic elements
-    - The location MUST be clearly visible in EVERY scene
-    - Example for "Paris": EVERY prompt must include "in Paris, Eiffel Tower visible in background, Parisian architecture, French cafe, Seine river"
-    - Example for "Jamaica": EVERY prompt must include "in Jamaica, Caribbean beach, palm trees, reggae culture, tropical setting"
-
-    THIS IS NON-NEGOTIABLE. If the song is about Paris, EVERY image must show Paris.
-
-    RULE 11 - SCENE COMPOSITION:
-    Each prompt should describe:
-    1. LOCATION (from Rule 10 - mandatory if song has one)
-    2. SUBJECT (person in casual clothes, object, or scene element from lyrics)
-    3. ACTION (what is happening - use RULE 12 for action verbs!)
-    4. STYLE (cinematic, dramatic lighting)
-
-    Example good prompt (singular): "solo, 1girl, a joyful woman in Paris, Eiffel Tower in background, wearing casual blue dress, portrait shot, face focus, golden sunset lighting, cinematic, photorealistic"
-    Example good prompt (plural): "two friends walking together in Paris near the Seine, both wearing casual clothes, medium shot, cinematic golden sunset lighting, photorealistic"
-    Example bad prompt: "A woman smiling" (no specific action, no clothing, no composition guidance)
-    Example bad prompt: "solo, 1girl" when the verse clearly says "we dance together"
-
-    RULE 12 - ACTION VERB TRANSFORMATION (CRITICAL FOR DYNAMIC SCENES):
-    AI image generators struggle with action verbs. You MUST:
-    1. Transform actions into EXPLICIT PHYSICAL DESCRIPTIONS
-    2. ONLY describe hand-object grip when the action explicitly requires object interaction
-    3. NEVER force hands to be prominently shown if the lyric does not mention them
-
-    DRINKING → "fingers wrapped around wine glass stem, glass rim touching lips, head tilted back, eyes closed enjoying the drink"
-    EATING → "hand gripping fork, fork raised to open mouth, food visible on fork"
-    RUNNING → "mid-stride with one leg extended forward, arms pumping, hair flowing"
-    DANCING → "arms raised above head, hips twisted, mid-spin motion"
-    SINGING → "hand gripping microphone, microphone pressed against lips, mouth wide open singing"
-    CRYING → "tears streaming down cheeks, eyes red and wet, hands covering face"
-    LAUGHING → "head thrown back, mouth wide open showing teeth, eyes squinting with joy"
-    FIGHTING → "fist clenched tight, arm extended forward mid-punch, knuckles visible"
-    WALKING → "one foot lifted mid-step, body leaning forward slightly"
-    JUMPING → "both feet off ground, knees bent, arms reaching upward"
-    SMOKING → "fingers holding cigarette, cigarette between lips, smoke rising from tip"
-    PRAYING → "palms pressed flat together at chest level, fingers interlocked, head bowed"
-    KISSING (singular) → "puckered lips, eyes closed, leaning forward"
-    KISSING (plural) → "two people kissing, faces close, eyes closed, hands touching"
-
-    CRITICAL FOR HAND-OBJECT SCENES:
-    - For object interactions, mention physical connection (example: "fingers wrapped around", "hand gripping")
-    - Mention where object touches body only when relevant (example: "glass rim touching lips")
-    - NEVER leave objects floating - they must be connected to hands or body
-    - For non-object actions, keep hands natural and secondary to the main action
-    - Avoid staged hand poses or hand-dominant framing unless lyrics explicitly require it
-    - Avoid cliché "head resting on hand" compositions unless lyrics explicitly describe that gesture
-    - In group scenes, do NOT make all characters touch their faces/hands at once
-
-    The key is: keep the scene action-first; hand detail is contextual, not mandatory.
-
-    RULE 13 - METAPHOR AND SIMILE HANDLING (CRITICAL):
-    When lyrics use comparisons like "like X" or "as X", focus on the ACTION, not the comparison object:
-
-    "drink wine LIKE WATER" → Focus on DRINKING WINE casually. Do NOT show multiple glasses or water.
-    "run LIKE THE WIND" → Focus on RUNNING fast. Do NOT show wind or air.
-    "cry LIKE A BABY" → Focus on CRYING intensely. Do NOT show a baby.
-    "fight LIKE A LION" → Focus on FIGHTING fiercely. Do NOT show a lion.
-    "sweet LIKE HONEY" → Focus on the sweet expression/moment. Do NOT show honey.
-
-    The comparison is FIGURATIVE - it describes HOW the action is done, not WHAT to show.
-    NEVER add extra objects based on the comparison. Keep one coherent action and one coherent scene.
-    Person count must still match the verse (singular vs plural).
-
-    RULE 14 - MINIMUM SCENE DENSITY (CRITICAL):
-    You MUST generate AT LEAST one scene per 5 seconds of lyrics content.
-    - If lyrics cover 60 seconds → generate AT LEAST 12 scenes
-    - If lyrics cover 30 seconds → generate AT LEAST 6 scenes
-    - NEVER skip verses or combine too many verses into one scene
-    - Each meaningful verse line should have its own scene
-    - The visual STYLE does NOT affect scene count - Film Noir should have the SAME number of scenes as Cinematic
-
-    ===== STYLE =====
-    {style_hint if style_hint else "Use realistic photographic style with dramatic lighting"}
-
-    ===== SONG INFO =====
-    {title_hint}
-
-    ===== LYRICS TO ANALYZE =====
-    {lyrics_content}
-
-    ===== OUTPUT FORMAT (JSON ONLY) =====
-    {{
-        "sentiment": "happy|sad|dark|energetic|romantic|nostalgic|rebellious",
-        "mood": "brief description",
-        "keywords": ["keyword1", "keyword2", "keyword3"],
-        "colorSuggestions": ["#hex1", "#hex2", "#hex3"],
-        "scenes": [
-            {{
-                "verseText": "the actual lyrics for this scene",
-                "startTime": 0.0,  # Start time in seconds (from provided timestamps)
-                "endTime": 5.0,    # End time in seconds
-                "visualPrompt": "LITERAL visual description following rules above, ending with quality keywords",
-                "duration": 5,
-                "transitionType": "fade|cut|dissolve"
-            }}
-        ],
-        "totalScenes": number
-    }}
-
-    SCENE GENERATION REQUIREMENTS:
-    - Create one scene per meaningful verse line or short verse block (2-3 lines max)
-    - Generate AT LEAST one scene every 5 seconds of audio content
-    - Use the provided timestamps to set "startTime" and "endTime" for each scene
-    - The visual style DOES NOT reduce scene count - all styles need the same scene density
-
-    Respond with ONLY valid JSON.
-    """
+    prompt_text = build_analysis_prompt(
+        style_hint if style_hint else "Use realistic photographic style with dramatic lighting",
+        title_hint,
+        lyrics_content,
+    )
 
     if not candidate_models:
         return build_fallback_analysis(
@@ -774,7 +768,8 @@ def analyze_with_gemini(lyrics: str, visual_style: str, api_key: str, segments: 
     last_error = None
     for index, model in enumerate(candidate_models):
         try:
-            response_json = request_gemini_generate(model, api_key, prompt_text)
+            ensure_stage_deadline(deadline_ts, f"model_attempt:{model}")
+            response_json = request_gemini_generate(model, api_key, prompt_text, deadline_ts=deadline_ts)
             candidates = response_json.get("candidates") or []
             if not candidates:
                 raise Exception(f"Empty candidates response from model '{model}'")
@@ -795,6 +790,7 @@ def analyze_with_gemini(lyrics: str, visual_style: str, api_key: str, segments: 
                 result = json.loads(clean_json[start:end])
 
             result['_model'] = model
+            result['_languageDetected'] = primary_language
             return sanitize_analysis_payload(
                 analysis=result,
                 lyrics=lyrics or "",
@@ -831,6 +827,7 @@ def analyze_lyrics():
     project_id = ""
 
     try:
+        deadline_ts = time.time() + ANALYZE_LYRICS_STAGE_TIMEOUT_SEC
         if len(sys.argv) >= 2:
             project_id = sys.argv[1]
             project["id"] = project_id
@@ -839,6 +836,7 @@ def analyze_lyrics():
 
         if project_id:
             try:
+                ensure_stage_deadline(deadline_ts, "project_load")
                 project = get_project_lyrics(project_id)
             except Exception as e:
                 print(f"Warning: DB fetch failed, continuing with local fallback. Error: {e}", file=sys.stderr)
@@ -854,6 +852,12 @@ def analyze_lyrics():
                 )
 
         api_key = os.getenv("GEMINI_API_KEY", "")
+        segment_text = " ".join([(seg.get("text") or "").strip() for seg in project.get("segments", [])]).strip()
+        language_source = (project.get("lyrics", "") or "").strip()
+        if not language_source and segment_text:
+            language_source = segment_text
+        detected_language = detect_primary_language(language_source)
+        print(f"Language route detected: {detected_language}", file=sys.stderr)
 
         if not project.get("lyrics") and not project.get("segments"):
             analysis = build_fallback_analysis(
@@ -864,12 +868,15 @@ def analyze_lyrics():
                 reason="no-lyrics-or-segments",
             )
         else:
+            ensure_stage_deadline(deadline_ts, "gemini_analysis")
             analysis = analyze_with_gemini(
                 project.get("lyrics", ""),
                 project.get("visualStyle", ""),
                 api_key,
                 segments=project.get("segments", []),
-                song_title=project.get("title", "")
+                song_title=project.get("title", ""),
+                primary_language=detected_language,
+                deadline_ts=deadline_ts,
             )
 
         analysis = sanitize_analysis_payload(
@@ -879,9 +886,12 @@ def analyze_lyrics():
             segments=project.get("segments", []),
             song_title=project.get("title", ""),
         )
+        if detected_language and not analysis.get("_languageDetected"):
+            analysis["_languageDetected"] = detected_language
 
         if project.get("segments"):
             try:
+                ensure_stage_deadline(deadline_ts, "scene_alignment")
                 analysis["scenes"] = align_scenes_with_segments(analysis["scenes"], project["segments"])
                 analysis["scenes"] = split_long_scenes(analysis["scenes"])
                 if len(analysis["scenes"]) > MAX_ANALYSIS_SCENES:
@@ -903,6 +913,7 @@ def analyze_lyrics():
 
         try:
             if "scenes" in analysis and CLASSIFIER_AVAILABLE:
+                ensure_stage_deadline(deadline_ts, "verse_classification")
                 print(f"Classifying {len(analysis['scenes'])} verses...", file=sys.stderr)
                 previous_verses = []
                 for scene in analysis["scenes"]:
@@ -929,6 +940,7 @@ def analyze_lyrics():
 
         if project_id:
             try:
+                ensure_stage_deadline(deadline_ts, "save_analysis")
                 save_analysis_result(project_id, analysis)
             except Exception as e:
                 print(f"Warning: Could not save analysis to DB: {e}", file=sys.stderr)
@@ -937,6 +949,24 @@ def analyze_lyrics():
         emit_result(result_payload)
         return result_payload
 
+    except TimeoutError as e:
+        fallback = build_fallback_analysis(
+            lyrics=project.get("lyrics", ""),
+            visual_style=project.get("visualStyle", ""),
+            segments=project.get("segments", []),
+            song_title=project.get("title", ""),
+            reason=f"analysis.timeout: {e}",
+        )
+        fallback = sanitize_analysis_payload(
+            analysis=fallback,
+            lyrics=project.get("lyrics", ""),
+            visual_style=project.get("visualStyle", ""),
+            segments=project.get("segments", []),
+            song_title=project.get("title", ""),
+        )
+        result_payload = with_result_status(fallback)
+        emit_result(result_payload)
+        return result_payload
     except Exception as e:
         fallback = build_fallback_analysis(
             lyrics=project.get("lyrics", ""),

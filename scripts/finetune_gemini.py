@@ -19,10 +19,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
+from result_json import emit_result as shared_emit_result
 from db_utils import get_db_connection
+from env_utils import parse_float_env, parse_positive_int_env
 
 
 # Fix Windows console encoding issues
@@ -41,11 +43,22 @@ TUNED_CONFIG_PATH = os.getenv(
     "GEMINI_TUNED_MODEL_CONFIG_PATH",
     os.path.join(root_dir, "storage", "gemini-tuned-model.json"),
 )
+GEMINI_TUNING_HTTP_TIMEOUT_SEC = parse_positive_int_env("GEMINI_TUNING_HTTP_TIMEOUT_SEC", 60)
+GEMINI_TUNING_POLL_INTERVAL_SEC = parse_positive_int_env("GEMINI_TUNING_POLL_INTERVAL_SEC", 10)
+GEMINI_TUNING_POLL_TIMEOUT_SEC = parse_positive_int_env("GEMINI_TUNING_POLL_TIMEOUT_SEC", 3600)
+FINETUNE_GEMINI_STAGE_TIMEOUT_SEC = parse_positive_int_env("FINETUNE_GEMINI_STAGE_TIMEOUT_SEC", 7200)
+GEMINI_TUNING_REQUEST_DELAY_SEC = max(0.0, parse_float_env("GEMINI_TUNING_REQUEST_DELAY_SEC", 0.0))
 
-def emit_result(payload: Dict):
-    output = json.dumps(payload, ensure_ascii=False)
-    print(output)
-    print(f"RESULT_JSON:{output}", file=sys.stderr)
+
+def emit_result(payload):
+    return shared_emit_result(payload, default_error_code="finetune_gemini")
+
+
+def ensure_stage_deadline(deadline_ts: Optional[float], phase: str) -> None:
+    if deadline_ts is None:
+        return
+    if time.time() > deadline_ts:
+        raise TimeoutError(f"finetune timeout during {phase}")
 
 def normalize_text(text: str, max_len: int) -> str:
     value = re.sub(r"\s+", " ", (text or "").strip())
@@ -125,7 +138,15 @@ def write_jsonl_dataset(examples: List[Dict[str, str]]) -> str:
     return file_path
 
 
-def api_request(method: str, url: str, api_key: str, payload: Dict = None, timeout: int = 60) -> Dict:
+def api_request(
+    method: str,
+    url: str,
+    api_key: str,
+    payload: Dict = None,
+    timeout: Optional[int] = None,
+    deadline_ts: Optional[float] = None,
+) -> Dict:
+    ensure_stage_deadline(deadline_ts, f"api_request:{method}")
     headers = {"Content-Type": "application/json"}
     data = None
     if payload is not None:
@@ -133,15 +154,18 @@ def api_request(method: str, url: str, api_key: str, payload: Dict = None, timeo
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        effective_timeout = timeout or GEMINI_TUNING_HTTP_TIMEOUT_SEC
+        with urllib.request.urlopen(req, timeout=effective_timeout) as response:
             raw = response.read().decode("utf-8")
+            if GEMINI_TUNING_REQUEST_DELAY_SEC > 0:
+                time.sleep(GEMINI_TUNING_REQUEST_DELAY_SEC)
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         raise Exception(f"HTTP {e.code} - {body}")
 
 
-def discover_tuning_base_model(api_key: str) -> Tuple[str, List[str]]:
+def discover_tuning_base_model(api_key: str, deadline_ts: Optional[float] = None) -> Tuple[str, List[str]]:
     """
     Try to discover a model that supports createTunedModel.
     Fallback to env/default if none found.
@@ -151,7 +175,7 @@ def discover_tuning_base_model(api_key: str) -> Tuple[str, List[str]]:
 
     list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
-        data = api_request("GET", list_url, api_key, payload=None, timeout=30)
+        data = api_request("GET", list_url, api_key, payload=None, timeout=30, deadline_ts=deadline_ts)
         for model in data.get("models", []):
             name = model.get("name")
             methods = model.get("supportedGenerationMethods", []) or []
@@ -193,6 +217,7 @@ def create_tuned_model(
     epoch_count: int,
     batch_size: int,
     learning_rate: float,
+    deadline_ts: Optional[float] = None,
 ) -> Dict:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/tunedModels"
@@ -226,7 +251,7 @@ def create_tuned_model(
         },
     }
 
-    return api_request("POST", url, api_key, payload=payload, timeout=120)
+    return api_request("POST", url, api_key, payload=payload, timeout=120, deadline_ts=deadline_ts)
 
 
 def extract_tuned_model_name(operation_obj: Dict) -> str:
@@ -247,22 +272,31 @@ def extract_tuned_model_name(operation_obj: Dict) -> str:
     return ""
 
 
-def wait_for_tuning_operation(api_key: str, operation_name: str, poll_interval: int = 10, timeout_sec: int = 3600) -> Dict:
+def wait_for_tuning_operation(
+    api_key: str,
+    operation_name: str,
+    poll_interval: Optional[int] = None,
+    timeout_sec: Optional[int] = None,
+    deadline_ts: Optional[float] = None,
+) -> Dict:
+    resolved_poll_interval = poll_interval if poll_interval is not None else GEMINI_TUNING_POLL_INTERVAL_SEC
+    resolved_timeout_sec = timeout_sec if timeout_sec is not None else GEMINI_TUNING_POLL_TIMEOUT_SEC
     start = time.time()
     encoded_name = urllib.parse.quote(operation_name, safe="/")
     url = f"https://generativelanguage.googleapis.com/v1beta/{encoded_name}?key={urllib.parse.quote(api_key)}"
 
     while True:
-        if time.time() - start > timeout_sec:
-            raise TimeoutError(f"Tuning operation timed out after {timeout_sec}s")
+        ensure_stage_deadline(deadline_ts, "wait_operation")
+        if time.time() - start > resolved_timeout_sec:
+            raise TimeoutError(f"Tuning operation timed out after {resolved_timeout_sec}s")
 
-        operation_obj = api_request("GET", url, api_key, payload=None, timeout=60)
+        operation_obj = api_request("GET", url, api_key, payload=None, timeout=60, deadline_ts=deadline_ts)
         if operation_obj.get("done"):
             if "error" in operation_obj:
                 raise Exception(f"Tuning operation failed: {json.dumps(operation_obj['error'])}")
             return operation_obj
 
-        time.sleep(poll_interval)
+        time.sleep(resolved_poll_interval)
 
 
 def save_tuned_model_config(config_path: str, payload: Dict):
@@ -285,10 +319,12 @@ def main():
     args = parser.parse_args()
 
     try:
+        deadline_ts = time.time() + FINETUNE_GEMINI_STAGE_TIMEOUT_SEC
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise Exception("GEMINI_API_KEY not found in .env")
 
+        ensure_stage_deadline(deadline_ts, "export_examples")
         examples = export_liked_training_pairs(
             max_examples=args.max_examples,
             max_input_len=args.max_input_len,
@@ -308,10 +344,12 @@ def main():
             emit_result(result)
             return
 
+        ensure_stage_deadline(deadline_ts, "write_jsonl")
         jsonl_path = write_jsonl_dataset(examples)
-        base_model, discovered_candidates = discover_tuning_base_model(api_key)
+        base_model, discovered_candidates = discover_tuning_base_model(api_key, deadline_ts=deadline_ts)
         tuned_model_id = args.tuned_model_id or make_tuned_model_id()
 
+        ensure_stage_deadline(deadline_ts, "create_tuned_model")
         create_op = create_tuned_model(
             api_key=api_key,
             base_model=base_model,
@@ -320,6 +358,7 @@ def main():
             epoch_count=args.epoch_count,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
+            deadline_ts=deadline_ts,
         )
 
         operation_name = create_op.get("name", "")
@@ -330,7 +369,12 @@ def main():
         final_operation = create_op
 
         if not args.skip_wait:
-            final_operation = wait_for_tuning_operation(api_key, operation_name)
+            ensure_stage_deadline(deadline_ts, "wait_for_operation")
+            final_operation = wait_for_tuning_operation(
+                api_key,
+                operation_name,
+                deadline_ts=deadline_ts,
+            )
             final_name = extract_tuned_model_name(final_operation)
             if final_name:
                 tuned_model_name = final_name
@@ -360,6 +404,15 @@ def main():
         }
         emit_result(result)
 
+    except TimeoutError as e:
+        emit_result({
+            "status": "degraded",
+            "success": True,
+            "degraded": True,
+            "reasonCode": "finetune.timeout",
+            "error": str(e),
+            "type": type(e).__name__,
+        })
     except Exception as e:
         emit_result({
             "status": "failed",

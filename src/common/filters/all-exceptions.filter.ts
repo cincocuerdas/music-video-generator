@@ -22,10 +22,23 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
+    const correlationId =
+      (request as Request & { correlationId?: string }).correlationId ||
+      (typeof request.headers['x-correlation-id'] === 'string'
+        ? request.headers['x-correlation-id']
+        : undefined) ||
+      null;
+
     // Log the full exception for debugging, ignoring harmless favicon errors
     if (request.url !== '/favicon.ico') {
       this.logger.error(
-        `Exception on ${request.method} ${request.url}`,
+        JSON.stringify({
+          event: 'http.exception',
+          cid: correlationId,
+          method: request.method,
+          url: request.url,
+          exceptionType: exception instanceof Error ? exception.name : typeof exception,
+        }),
         exception instanceof Error ? exception.stack : String(exception),
       );
     }
@@ -52,16 +65,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
       });
     }
 
-    const message =
+    const rawMessage =
       exception instanceof HttpException
         ? exception.getResponse()
         : 'Internal server error';
+    const message = typeof rawMessage === 'string' ? rawMessage : (rawMessage as any)?.message;
 
     response.status(status).json({
       statusCode: status,
       timestamp: new Date().toISOString(),
       path: request.url,
-      message: typeof message === 'string' ? message : (message as any).message,
+      correlationId,
+      message,
     });
   }
 }

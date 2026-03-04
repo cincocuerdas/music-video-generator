@@ -56,3 +56,10 @@ yt-dlp
 -r
 0.39.0
 1.50.0
+
+# Claude temp files
+tmpclaude-*
+nul
+
+# Gemini semaphore lock files
+scripts/.gemini_locks/

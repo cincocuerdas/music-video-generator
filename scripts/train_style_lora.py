@@ -11,11 +11,16 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import queue
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+from result_json import emit_result as shared_emit_result
 from db_utils import get_db_connection
+from env_utils import parse_positive_int_env
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,9 +30,14 @@ load_dotenv(dotenv_path)
 
 
 def emit_result(payload):
-    output = json.dumps(payload)
-    print(output)
-    print(f"RESULT_JSON:{output}", file=sys.stderr)
+    return shared_emit_result(payload, default_error_code="train_lora")
+
+
+def ensure_stage_deadline(deadline_ts: Optional[float], phase: str) -> None:
+    if deadline_ts is None:
+        return
+    if time.time() > deadline_ts:
+        raise TimeoutError(f"train_lora timeout during {phase}")
 
 def normalize_style(style: str) -> str:
     style = (style or "").strip().lower()
@@ -232,7 +242,12 @@ def resolve_trained_lora(output_dir: str, output_name: str) -> Optional[str]:
     return candidates[0][1]
 
 
-def run_kohya_training(style_name: str, dataset_root: str, epochs: int) -> Dict[str, Any]:
+def run_kohya_training(
+    style_name: str,
+    dataset_root: str,
+    epochs: int,
+    deadline_ts: Optional[float] = None,
+) -> Dict[str, Any]:
     lora_output_dir = os.path.join(root_dir, "ComfyUI", "models", "loras")
     os.makedirs(lora_output_dir, exist_ok=True)
 
@@ -254,6 +269,7 @@ def run_kohya_training(style_name: str, dataset_root: str, epochs: int) -> Dict[
 
     output_name = f"style_{style_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     python_exec = sys.executable or os.getenv("PYTHON_PATH", "python")
+    timeout_sec = parse_positive_int_env("TRAIN_LORA_STAGE_TIMEOUT_SEC", 14_400)
 
     cmd = [
         python_exec,
@@ -288,13 +304,51 @@ def run_kohya_training(style_name: str, dataset_root: str, epochs: int) -> Dict[
         text=True,
         cwd=kohya_dir,
     )
+    started_at = time.time()
+
+    line_queue: queue.Queue[str] = queue.Queue()
+
+    def _reader_thread() -> None:
+        if not process.stdout:
+            return
+        try:
+            for line in process.stdout:
+                line_queue.put(line)
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+
+    reader = threading.Thread(target=_reader_thread, daemon=True)
+    reader.start()
 
     while True:
-        line = process.stdout.readline() if process.stdout else ""
-        if not line and process.poll() is not None:
+        ensure_stage_deadline(deadline_ts, "run_kohya_training")
+        elapsed = time.time() - started_at
+        if elapsed > timeout_sec:
+            process.kill()
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
+            raise TimeoutError(f"Kohya training timed out after {timeout_sec}s")
+
+        drained = False
+        while True:
+            try:
+                line = line_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained = True
+            if line:
+                print(line.rstrip(), file=sys.stderr)
+
+        return_code = process.poll()
+        if return_code is not None and line_queue.empty() and (drained or not reader.is_alive()):
             break
-        if line:
-            print(line.rstrip(), file=sys.stderr)
+
+        time.sleep(0.1)
 
     return_code = process.wait()
     if return_code != 0:
@@ -314,17 +368,26 @@ def run_kohya_training(style_name: str, dataset_root: str, epochs: int) -> Dict[
 
 def main():
     try:
+        stage_timeout_sec = parse_positive_int_env("TRAIN_LORA_TOTAL_TIMEOUT_SEC", 18_000)
+        deadline_ts = (
+            time.time() + stage_timeout_sec if stage_timeout_sec > 0 else None
+        )
+
         if len(sys.argv) < 2:
             emit_result({
                 "status": "failed",
                 "success": False,
+                "degraded": False,
+                "degradedReasons": [],
+                "errorCode": "train_lora.missing_style_argument",
                 "error": "Style argument required",
             })
-            sys.exit(1)
+            return
 
         style_raw = sys.argv[1]
         style_name = normalize_style(style_raw)
 
+        ensure_stage_deadline(deadline_ts, "fetch_positive_feedback")
         feedback_rows = fetch_positive_feedback(style_raw)
         likes_count = len(feedback_rows)
         if likes_count == 0:
@@ -342,6 +405,7 @@ def main():
             )
             return
 
+        ensure_stage_deadline(deadline_ts, "build_training_samples")
         samples = build_training_samples(feedback_rows)
         if len(samples) < 20:
             emit_result(
@@ -358,9 +422,16 @@ def main():
             )
             return
 
+        ensure_stage_deadline(deadline_ts, "prepare_dataset")
         dataset_info = prepare_dataset(samples, style_name)
         epochs = choose_epochs(len(samples))
-        training_result = run_kohya_training(style_name, dataset_info["datasetRoot"], epochs)
+        ensure_stage_deadline(deadline_ts, "run_kohya_training")
+        training_result = run_kohya_training(
+            style_name,
+            dataset_info["datasetRoot"],
+            epochs,
+            deadline_ts=deadline_ts,
+        )
 
         result = {
             "status": "success",
@@ -383,10 +454,13 @@ def main():
         emit_result({
             "status": "failed",
             "success": False,
+            "degraded": False,
+            "degradedReasons": [],
+            "errorCode": "train_lora.exception",
             "error": str(exc),
             "type": type(exc).__name__,
         })
-        sys.exit(1)
+        return
 
 
 if __name__ == "__main__":

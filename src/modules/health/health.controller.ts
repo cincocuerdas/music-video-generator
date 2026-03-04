@@ -1,14 +1,17 @@
 import { Controller, DefaultValuePipe, Get, ParseIntPipe, Query } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { HealthService } from './health.service';
 
 @Controller('health')
+@ApiTags('health')
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
 
   @Get()
   @SkipThrottle({ default: true })
+  @ApiOperation({ summary: 'Basic health check endpoint' })
   check() {
     return {
       status: 'ok',
@@ -18,6 +21,7 @@ export class HealthController {
 
   @Get('ops')
   @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Operational snapshot (aggregated metrics)' })
   async ops(): Promise<Record<string, unknown>> {
     return this.healthService.getOpsSnapshot();
   }
@@ -44,5 +48,57 @@ export class HealthController {
     @Query('sourceMode') sourceMode?: string,
   ): Promise<Record<string, unknown>> {
     return this.healthService.getPipelineQualitySummary(hours, sourceMode);
+  }
+
+  @Get('ops/duration-by-stage')
+  @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Per-stage duration percentiles (avg, p50, p95, max)' })
+  async durationByStage(
+    @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+  ): Promise<Record<string, unknown>> {
+    return this.healthService.getDurationByStage(hours);
+  }
+
+  @Get('ops/degraded-by-language')
+  @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Degraded rate grouped by detected language' })
+  async degradedByLanguage(
+    @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+  ): Promise<Record<string, unknown>> {
+    return this.healthService.getDegradedRateByLanguage(hours);
+  }
+
+  @Get('ops/pipeline-slo')
+  @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Full pipeline SLO (p95 latency threshold + alerts)' })
+  async pipelineSlo(
+    @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+  ): Promise<Record<string, unknown>> {
+    return this.healthService.getPipelineSlo(hours);
+  }
+
+  @Get('ops/queue-wait-by-stage')
+  @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Queue wait percentiles by stage (completed wait + current pending age)' })
+  async queueWaitByStage(
+    @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+  ): Promise<Record<string, unknown>> {
+    return this.healthService.getQueueWaitByStage(hours);
+  }
+
+  @Get('ops/pipeline-slo-breakdown')
+  @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Top slow pipelines with per-stage duration, retries and handoff waits' })
+  async pipelineSloBreakdown(
+    @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+  ): Promise<Record<string, unknown>> {
+    return this.healthService.getPipelineSloBreakdown(hours);
+  }
+
+  @Get('ops/slo-mitigation')
+  @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Current SLO auto-mitigation status' })
+  sloMitigation(): Record<string, unknown> {
+    return this.healthService.getSloMitigationSnapshot() as unknown as Record<string, unknown>;
   }
 }

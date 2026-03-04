@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+.git
+.github
+.claude
+.claude-dev-helper
+.agent
+output
+storage
+logs
+npm-debug.log*
+*.local
+.env
+.env.*
+!*.example

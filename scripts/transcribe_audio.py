@@ -5,7 +5,23 @@ Transcribes audio using Whisper and saves to database.
 """
 import sys
 import os
+
+# Force UTF-8 on Windows before any output
+if os.name == "nt":
+    for _stream_name in ("stdout", "stderr"):
+        _stream = getattr(sys, _stream_name)
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
 import json
+import time
+import queue
+import threading
+from result_json import emit_result as shared_emit_result
+from env_utils import parse_positive_int_env
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -16,18 +32,24 @@ except ImportError:
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 load_dotenv(os.path.join(root_dir, '.env'))
+TRANSCRIPTION_STAGE_TIMEOUT_SEC = parse_positive_int_env("TRANSCRIPTION_STAGE_TIMEOUT_SEC", 1500)
+
+
+def emit_result(payload):
+    return shared_emit_result(payload, default_error_code="transcription")
+
+
+def ensure_stage_deadline(deadline_ts: float | None, phase: str) -> None:
+    if deadline_ts is None:
+        return
+    if time.time() > deadline_ts:
+        raise TimeoutError(f"transcription timeout during {phase}")
 
 try:
     from redis_events import emit_progress as emit_redis_progress
     REDIS_EVENTS_AVAILABLE = True
 except ImportError:
     REDIS_EVENTS_AVAILABLE = False
-
-
-def emit_result(payload):
-    output = json.dumps(payload)
-    print(output)
-    print(f"RESULT_JSON:{output}", file=sys.stderr)
 
 
 def emit_progress(project_id: str | None, progress: int, message: str):
@@ -48,6 +70,7 @@ def emit_progress(project_id: str | None, progress: int, message: str):
         emit_redis_progress(project_id, progress, message, job_type="TRANSCRIPTION")
     except Exception as error:
         print(f"Warning: failed to publish transcription progress to Redis: {error}", file=sys.stderr)
+
 
 def transcribe_audio(audio_path: str, force_language: str = None, project_id: str = None) -> dict:
     """Transcribe audio using faster-whisper (CPU mode)"""
@@ -127,6 +150,48 @@ def transcribe_audio(audio_path: str, force_language: str = None, project_id: st
         "language": info.language,
         "segments": timed_segments
     }
+
+
+def run_transcription_with_timeout(
+    audio_path: str,
+    force_language: str = None,
+    project_id: str = None,
+) -> dict:
+    timeout_sec = parse_positive_int_env("WHISPER_TRANSCRIBE_TIMEOUT_SEC", 900)
+    if timeout_sec <= 0:
+        return transcribe_audio(audio_path, force_language=force_language, project_id=project_id)
+
+    result_queue: "queue.Queue[tuple[str, object]]" = queue.Queue(maxsize=1)
+
+    def worker():
+        try:
+            result = transcribe_audio(audio_path, force_language=force_language, project_id=project_id)
+            result_queue.put(("ok", result))
+        except Exception as error:
+            result_queue.put(("err", error))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    start = time.time()
+    thread.start()
+    thread.join(timeout=timeout_sec)
+
+    if thread.is_alive():
+        raise TimeoutError(
+            f"Whisper transcription timed out after {timeout_sec}s (WHISPER_TRANSCRIBE_TIMEOUT_SEC)"
+        )
+
+    if result_queue.empty():
+        raise RuntimeError("Whisper transcription failed without returning a result.")
+
+    status, payload = result_queue.get_nowait()
+    if status == "err":
+        if isinstance(payload, Exception):
+            raise payload
+        raise RuntimeError(str(payload))
+
+    elapsed = int(time.time() - start)
+    print(f"Whisper transcription completed in {elapsed}s", file=sys.stderr)
+    return payload
 
 def try_youtube_subtitles(youtube_url: str) -> dict | None:
     """Try to get subtitles from YouTube as alternative to Whisper transcription.
@@ -246,6 +311,11 @@ def main():
     conn = None
     cur = None
     degraded_reasons = []
+    deadline_ts = (
+        time.time() + TRANSCRIPTION_STAGE_TIMEOUT_SEC
+        if TRANSCRIPTION_STAGE_TIMEOUT_SEC > 0
+        else None
+    )
 
     try:
         if len(sys.argv) < 2:
@@ -254,6 +324,7 @@ def main():
                 "success": False,
                 "degraded": False,
                 "degradedReasons": [],
+                "errorCode": "transcription.missing_project_id",
                 "error": "Missing projectId",
             }
             emit_result(result)
@@ -269,8 +340,10 @@ def main():
         emit_progress(project_id, 5, "Initializing transcription module...")
 
         # Get project from database
+        ensure_stage_deadline(deadline_ts, "connect_db")
         conn = get_db_connection()
         cur = conn.cursor()
+        ensure_stage_deadline(deadline_ts, "load_project")
         cur.execute('SELECT "audioUrl", lyrics, "youtubeUrl" FROM "Project" WHERE id = %s', (project_id,))
         row = cur.fetchone()
 
@@ -280,6 +353,7 @@ def main():
                 "success": False,
                 "degraded": False,
                 "degradedReasons": [],
+                "errorCode": "transcription.project_not_found",
                 "error": "Project not found",
             }
             emit_result(result)
@@ -304,6 +378,7 @@ def main():
         # Try YouTube subtitles first (often more accurate for music videos)
         # Can be disabled with SKIP_YOUTUBE_SUBS=true
         if not os.getenv("SKIP_YOUTUBE_SUBS") and youtube_url:
+            ensure_stage_deadline(deadline_ts, "youtube_subtitles")
             emit_progress(project_id, 10, "Checking YouTube subtitles...")
             yt_result = try_youtube_subtitles(youtube_url)
             if yt_result and len(yt_result.get("segments", [])) > 5:
@@ -338,6 +413,7 @@ def main():
                 "success": False,
                 "degraded": False,
                 "degradedReasons": [],
+                "errorCode": "transcription.no_audio_file",
                 "error": "No audio file found for project",
             }
             emit_result(result)
@@ -363,15 +439,34 @@ def main():
                 "success": False,
                 "degraded": False,
                 "degradedReasons": [],
+                "errorCode": "transcription.audio_path_not_found",
                 "error": f"Audio file not found: {audio_path}",
             }
             emit_result(result)
             return result
 
         # Transcribe with Whisper (using large-v3 model by default for best vocal detection)
-        transcription = transcribe_audio(audio_path, project_id=project_id)
+        ensure_stage_deadline(deadline_ts, "whisper_transcription")
+        try:
+            transcription = run_transcription_with_timeout(audio_path, project_id=project_id)
+        except TimeoutError as timeout_error:
+            degraded_reasons.append("transcription.timeout")
+            emit_progress(project_id, 98, "Whisper timed out; using degraded fallback transcription.")
+            print(f"Warning: {timeout_error}", file=sys.stderr)
+            transcription = {
+                "lyrics": "[Instrumental or low-audibility vocals]",
+                "language": "unknown",
+                "segments": [
+                    {
+                        "text": "[Instrumental or low-audibility vocals]",
+                        "start": 0.0,
+                        "end": 15.0,
+                    }
+                ],
+            }
 
         # Save lyrics to database
+        ensure_stage_deadline(deadline_ts, "save_lyrics")
         cur.execute(
             'UPDATE "Project" SET lyrics = %s WHERE id = %s',
             (transcription["lyrics"], project_id)
@@ -395,12 +490,24 @@ def main():
         emit_result(result)
         return result
 
+    except TimeoutError as error:
+        result = {
+            "status": "failed",
+            "success": False,
+            "degraded": False,
+            "degradedReasons": [],
+            "errorCode": "transcription.stage_timeout",
+            "error": str(error),
+        }
+        emit_result(result)
+        return result
     except Exception as error:
         result = {
             "status": "failed",
             "success": False,
             "degraded": False,
             "degradedReasons": [],
+            "errorCode": "transcription.exception",
             "error": str(error),
         }
         emit_result(result)

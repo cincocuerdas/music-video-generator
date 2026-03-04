@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { createHmac } from 'node:crypto';
 import { SentryService } from '../observability';
+import { parsePositiveIntEnv } from '../../common/utils/env-parsers';
 
 interface DegradedAlertRow {
   severity: 'warning' | 'critical';
@@ -48,11 +49,11 @@ interface DegradedSnapshotLike {
 export class HealthAlertingService {
   private readonly logger = new Logger(HealthAlertingService.name);
   private readonly webhookUrl = (process.env.HEALTH_ALERT_WEBHOOK_URL || '').trim();
-  private readonly cooldownMs = this.parsePositiveIntEnv(
+  private readonly cooldownMs = parsePositiveIntEnv(
     'HEALTH_DEGRADED_ALERT_COOLDOWN_MS',
     15 * 60 * 1000,
   );
-  private readonly requestTimeoutMs = this.parsePositiveIntEnv(
+  private readonly requestTimeoutMs = parsePositiveIntEnv(
     'HEALTH_ALERT_WEBHOOK_TIMEOUT_MS',
     5000,
   );
@@ -241,12 +242,4 @@ export class HealthAlertingService {
       .digest('hex');
   }
 
-  private parsePositiveIntEnv(key: string, fallback: number): number {
-    const raw = process.env[key];
-    if (!raw) {
-      return fallback;
-    }
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-  }
 }

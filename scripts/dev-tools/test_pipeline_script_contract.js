@@ -61,6 +61,10 @@ async function validateScript(scriptPath) {
   assert(payload.success === false, `${scriptPath} success should be false`);
   assert(typeof payload.degraded === 'boolean', `${scriptPath} degraded should be boolean`);
   assert(Array.isArray(payload.degradedReasons), `${scriptPath} degradedReasons should be array`);
+  assert(
+    typeof payload.errorCode === 'string' && payload.errorCode.trim().length > 0,
+    `${scriptPath} errorCode should be a non-empty string for failed payloads`,
+  );
 
   console.log(`${scriptPath}: status=${payload.status} success=${payload.success} exit=${result.code}`);
 }
@@ -69,6 +73,8 @@ async function main() {
   try {
     await validateScript('scripts/youtube_download.py');
     await validateScript('scripts/transcribe_audio.py');
+    await validateScript('scripts/render_video.py');
+    await validateScript('scripts/train_style_lora.py');
     console.log('pipeline_script_contract_test_status=PASS');
   } catch (error) {
     console.error('pipeline_script_contract_test_status=FAIL');

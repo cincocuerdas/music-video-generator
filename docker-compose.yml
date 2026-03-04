@@ -1,30 +1,68 @@
-version: '3.8'
-
 services:
   # Base de datos PostgreSQL
   postgres:
     image: pgvector/pgvector:pg15
     container_name: musicvideo-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: musicvideo
+      POSTGRES_USER: ${POSTGRES_USER:-mvg_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_db_password}
+      POSTGRES_DB: ${POSTGRES_DB:-musicvideo}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 1g
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_net
     restart: unless-stopped
 
   # Redis para BullMQ (colas de trabajo)
   redis:
     image: redis:7-alpine
     container_name: musicvideo-redis
+    command: >
+      sh -c 'if [ "$$REDIS_REQUIRE_PASSWORD" = "true" ] && [ -z "$$REDIS_PASSWORD" ]; then
+        echo "ERROR: REDIS_PASSWORD is required when REDIS_REQUIRE_PASSWORD=true";
+        exit 1;
+      elif [ -n "$$REDIS_PASSWORD" ]; then
+        exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+      else
+        exec redis-server --appendonly yes;
+      fi'
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    environment:
+      REDIS_REQUIRE_PASSWORD: ${REDIS_REQUIRE_PASSWORD:-false}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$${REDIS_PASSWORD}\" ]; then redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG; else redis-cli ping | grep -q PONG; fi"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    mem_limit: 512m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - redis_data:/data
+    networks:
+      - app_net
     restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  app_net:
+    driver: bridge

@@ -88,6 +88,34 @@ PRE_PUSH_MODE=full git push
 $env:PRE_PUSH_MODE="full"; git push; Remove-Item Env:PRE_PUSH_MODE
 ```
 
+## Production Docker Deploy
+
+Use the multi-stage `Dockerfile` plus `docker-compose.prod.yml`.
+
+1. Set required production env vars in `.env`:
+
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `REDIS_PASSWORD`
+- `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
+- `JWT_REFRESH_TOKEN_PEPPER`
+- `DATABASE_URL` / `REDIS_URL` (or allow compose to inject service URLs)
+- Provider secrets (`GEMINI_API_KEY`, `REPLICATE_API_TOKEN`, `COMFYUI_URL`) depending on providers
+
+2. Build and run:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+3. Verify health:
+
+```bash
+curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/health/ops
+```
+
 ## Performance Benchmark (Image Generation Concurrency)
 
 Run baseline benchmark for `generate_images.py` concurrency with p50/p95 report:
@@ -317,6 +345,8 @@ PENDING â†’ PROCESSING â†’ COMPLETED
 | `GEMINI_MODELS_TIMEOUT_SEC` | Timeout (seconds) for Gemini model list request | `10` |
 | `GEMINI_REQUEST_TIMEOUT_SEC` | Timeout (seconds) for Gemini generate request | `45` |
 | `GEMINI_REQUEST_RETRIES` | Retries for transient Gemini request failures | `2` |
+| `ANALYSIS_GEMINI_MODEL_CANDIDATES` | Ordered fallback models for lyrics analysis in default route | `models/gemini-2.5-flash,...` |
+| `ANALYSIS_GEMINI_MODEL_CANDIDATES_MULTILINGUAL` | Ordered fallback models for high-context multilingual analysis (ko/ja/zh route) | `models/gemini-2.5-pro,...` |
 | `SENTRY_DSN` | Sentry DSN for backend error/trace reporting (`empty` = disabled) | (empty) |
 | `SENTRY_RELEASE` | Release/version label reported to Sentry | (empty) |
 | `SENTRY_TRACES_SAMPLE_RATE` | Sampling rate for Sentry traces (`0.0` to `1.0`) | `0` |
@@ -337,6 +367,14 @@ PENDING â†’ PROCESSING â†’ COMPLETED
 | `API_BASE_URL` in production | Required explicit backend API base for Python helper/test scripts | _required_ |
 | `COMFYUI_URL` | Local ComfyUI server URL used by image generation | `http://127.0.0.1:8188` |
 | `COMFYUI_URL` in production | Required explicit ComfyUI endpoint in pipeline scripts (no implicit local fallback) | _required_ |
+| `REDIS_REQUIRE_PASSWORD` | When `true`, Redis startup requires `REDIS_PASSWORD` to be set (fail-fast guard) | `false` |
+| `REDIS_PASSWORD` | Redis password (required when `REDIS_REQUIRE_PASSWORD=true`) | (empty) |
+| `WHISPER_TRANSCRIBE_TIMEOUT_SEC` | Hard timeout (seconds) for Whisper transcription thread; `0` disables | `900` |
+| `COMFYUI_WORKFLOW_TEMPLATE_PATH` | Path to the ComfyUI SDXL base workflow JSON template; validated at first load | `scripts/workflows/comfyui_sdxl_base_workflow.json` |
+| `GEMINI_IMAGE_MODEL` | Gemini image model used for generation (Nano Banana family) | `gemini-3-pro-image-preview` |
+| `GEMINI_MIN_INTERVAL_SECONDS` | Minimum seconds between serialized Gemini API calls (rate-limit pacing) | `6.0` |
+| `GEMINI_ROUTING_RETRY_BACKOFF_SECONDS` | Base backoff seconds for Gemini 429 retries | `30.0` |
+| `GEMINI_ROUTING_BACKOFF_JITTER_RATIO` | Jitter ratio (±) applied to Gemini backoff waits | `0.25` |
 | `PLACEHOLDER_IMAGE_BASE_URL` | Base URL used for generated fallback placeholder images | `https://placehold.co` |
 | `MOCK_VIDEO_URL` | Mock video URL returned when `VIDEO_RENDER` runs in mock mode | (empty) |
 

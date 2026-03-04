@@ -92,6 +92,16 @@ function ensureDirs() {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
+function withNodeMemoryGuard(env) {
+  const baseOptions = (env.NODE_OPTIONS || '').trim();
+  const guard = '--max-old-space-size=4096';
+  if (baseOptions.includes('--max-old-space-size=')) {
+    return env;
+  }
+  const nextOptions = baseOptions ? `${baseOptions} ${guard}` : guard;
+  return { ...env, NODE_OPTIONS: nextOptions };
+}
+
 function isProcessRunning(pid) {
   if (!pid || typeof pid !== 'number') {
     return false;
@@ -277,15 +287,18 @@ async function commandUp(force) {
   const stdoutFd = fs.openSync(STDOUT_LOG, 'a');
   const stderrFd = fs.openSync(STDERR_LOG, 'a');
 
+  const runtimeEnv = withNodeMemoryGuard({
+    ...process.env,
+    ALLOW_DEV_AUTH_BYPASS: process.env.ALLOW_DEV_AUTH_BYPASS || 'true',
+  });
+
   const child = spawn(process.execPath, [entry], {
     cwd: ROOT_DIR,
-    detached: process.platform !== 'win32',
+    // Keep backend alive after the wrapper exits on Windows and Unix.
+    detached: true,
     stdio: ['ignore', stdoutFd, stderrFd],
     shell: false,
-    env: {
-      ...process.env,
-      ALLOW_DEV_AUTH_BYPASS: process.env.ALLOW_DEV_AUTH_BYPASS || 'true',
-    },
+    env: runtimeEnv,
   });
   child.unref();
   fs.closeSync(stdoutFd);

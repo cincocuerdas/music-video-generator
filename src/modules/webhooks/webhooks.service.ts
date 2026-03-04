@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { SentryService } from '../observability';
+import { parsePositiveIntEnv } from '../../common/utils/env-parsers';
 import {
   InMemoryWebhookReplayStore,
   verifySignedWebhook,
@@ -20,7 +21,7 @@ export class WebhooksService {
   private readonly logger = new Logger(WebhooksService.name);
   private readonly replayStore = new InMemoryWebhookReplayStore();
   private readonly receiverSecret = (process.env.HEALTH_WEBHOOK_RECEIVER_SECRET || '').trim();
-  private readonly maxSkewSec = this.parsePositiveIntEnv('HEALTH_WEBHOOK_RECEIVER_MAX_SKEW_SEC', 300);
+  private readonly maxSkewSec = parsePositiveIntEnv('HEALTH_WEBHOOK_RECEIVER_MAX_SKEW_SEC', 300);
 
   constructor(private readonly sentryService: SentryService) {}
 
@@ -82,12 +83,4 @@ export class WebhooksService {
     });
   }
 
-  private parsePositiveIntEnv(key: string, fallback: number): number {
-    const raw = process.env[key];
-    if (!raw) {
-      return fallback;
-    }
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-  }
 }

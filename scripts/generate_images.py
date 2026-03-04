@@ -11,10 +11,20 @@ import os
 import time
 import re
 import base64
+import copy
+import random
+import threading
 import urllib.request
 import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from result_json import emit_result as shared_emit_result
+from env_utils import (
+    parse_bool_env,
+    parse_csv_env,
+    parse_float_env,
+    parse_int_env,
+)
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -50,6 +60,13 @@ except ImportError:
     STEERING_AVAILABLE = False
     print("Warning: live_steering module not available. Live direction disabled.", file=sys.stderr)
 
+# Import shared Redis utilities (optional)
+try:
+    from redis_utils import get_redis_client as create_redis_client
+    REDIS_UTILS_AVAILABLE = True
+except ImportError:
+    REDIS_UTILS_AVAILABLE = False
+
 # Fix Windows console encoding issues
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -68,75 +85,219 @@ def get_db_connection():
 
 
 def emit_result(payload):
-    if not isinstance(payload, dict):
-        payload = {
-            "status": "failed",
-            "success": False,
-            "degraded": False,
-            "degradedReasons": ["image_generation.invalid_payload"],
-            "errorCode": "image_generation.invalid_payload",
-            "message": "Invalid result payload",
-        }
-    else:
-        normalized = dict(payload)
-        raw_status = str(normalized.get("status") or "").strip().lower()
-
-        if raw_status not in {"success", "degraded", "failed"}:
-            if isinstance(normalized.get("success"), bool):
-                raw_status = "success" if normalized["success"] else "failed"
-            else:
-                raw_status = "success"
-            normalized["status"] = raw_status
-
-        if not isinstance(normalized.get("success"), bool):
-            normalized["success"] = raw_status != "failed"
-
-        if not isinstance(normalized.get("degraded"), bool):
-            normalized["degraded"] = raw_status == "degraded"
-
-        degraded_reasons = normalized.get("degradedReasons")
-        if isinstance(degraded_reasons, list):
-            normalized["degradedReasons"] = [
-                str(reason).strip()
-                for reason in degraded_reasons
-                if str(reason).strip()
-            ]
-        elif isinstance(degraded_reasons, str):
-            cleaned = degraded_reasons.strip()
-            normalized["degradedReasons"] = [cleaned] if cleaned else []
-        else:
-            normalized["degradedReasons"] = []
-
-        if normalized["degraded"] and not normalized["degradedReasons"]:
-            normalized["degradedReasons"] = ["image_generation.degraded"]
-
-        if (raw_status == "failed" or normalized["success"] is False) and not str(
-            normalized.get("errorCode") or ""
-        ).strip():
-            normalized["errorCode"] = "image_generation.failed"
-
-        payload = normalized
-
-    output = json.dumps(payload, ensure_ascii=False)
-    print(output)
-    print(f"RESULT_JSON:{output}", file=sys.stderr)
+    return shared_emit_result(payload, default_error_code="image_generation")
 
 
-def parse_bool_env(name: str, default: bool = False) -> bool:
-    value = (os.getenv(name) or "").strip().lower()
-    if not value:
-        return default
-    return value in {"1", "true", "yes", "on"}
+SLO_MITIGATION_REDIS_KEY = "mvg:slo_mitigation"
+_SLO_MITIGATION_RUNTIME = {
+    "active": False,
+    "earlyFailover": False,
+    "maxConcurrency": None,
+    "reason": None,
+}
 
 
-def parse_int_env(name: str, fallback: int) -> int:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        return fallback
+def set_slo_mitigation_runtime(state: dict) -> None:
+    global _SLO_MITIGATION_RUNTIME
+    _SLO_MITIGATION_RUNTIME = {
+        "active": bool(state.get("active")),
+        "earlyFailover": bool(state.get("earlyFailover")),
+        "maxConcurrency": state.get("maxConcurrency"),
+        "reason": state.get("reason"),
+    }
+
+
+def get_slo_mitigation_runtime() -> dict:
+    return {
+        "active": bool(_SLO_MITIGATION_RUNTIME.get("active")),
+        "earlyFailover": bool(_SLO_MITIGATION_RUNTIME.get("earlyFailover")),
+        "maxConcurrency": _SLO_MITIGATION_RUNTIME.get("maxConcurrency"),
+        "reason": _SLO_MITIGATION_RUNTIME.get("reason"),
+    }
+
+
+def read_slo_mitigation_flag() -> dict:
+    """
+    Read mitigation flag from Redis.
+    Expected payload written by backend:
+      { active: true|false, earlyFailover: true|false, maxConcurrency: 1, reason: "..." }
+    """
+    state = {
+        "active": False,
+        "earlyFailover": False,
+        "maxConcurrency": None,
+        "reason": None,
+    }
+    if not parse_bool_env("SLO_MITIGATION_REDIS_ENABLED", True):
+        return state
+    if not REDIS_UTILS_AVAILABLE:
+        return state
+
+    client = create_redis_client(log_prefix="SLOMitigation", ping=False)
+    if client is None:
+        return state
+
     try:
-        return int(raw)
-    except Exception:
-        return fallback
+        raw = client.get(SLO_MITIGATION_REDIS_KEY)
+        if not raw:
+            return state
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        payload = json.loads(str(raw))
+        if not isinstance(payload, dict):
+            return state
+
+        active = bool(payload.get("active"))
+        early_failover = bool(payload.get("earlyFailover"))
+
+        max_concurrency = None
+        raw_concurrency = payload.get("maxConcurrency")
+        try:
+            parsed_concurrency = int(raw_concurrency)
+            if parsed_concurrency > 0:
+                max_concurrency = parsed_concurrency
+        except Exception:
+            max_concurrency = None
+
+        state.update(
+            {
+                "active": active,
+                "earlyFailover": early_failover,
+                "maxConcurrency": max_concurrency,
+                "reason": payload.get("reason"),
+            }
+        )
+    except Exception as exc:
+        print(f"Warning: failed to read SLO mitigation flag: {exc}", file=sys.stderr)
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    return state
+
+
+def apply_backoff_jitter(base_seconds: float) -> float:
+    """
+    Add jitter to backoff waits to reduce retry synchronization (thundering herd).
+    Uses multiplicative jitter around the base value.
+    """
+    if base_seconds <= 0:
+        return 0.0
+    ratio = max(0.0, parse_float_env("GEMINI_ROUTING_BACKOFF_JITTER_RATIO", 0.25))
+    if ratio == 0:
+        return base_seconds
+    min_factor = max(0.0, 1.0 - ratio)
+    max_factor = 1.0 + ratio
+    return max(0.0, base_seconds * random.uniform(min_factor, max_factor))
+
+
+class GeminiRoutingState:
+    def __init__(self):
+        self._cooldown_until = 0.0
+        self._lock = threading.Lock()
+
+    def cooldown_remaining(self) -> float:
+        with self._lock:
+            return max(0.0, self._cooldown_until - time.time())
+
+    def activate_cooldown(self, seconds: int) -> None:
+        if seconds <= 0:
+            return
+        with self._lock:
+            until = time.time() + seconds
+            if until > self._cooldown_until:
+                self._cooldown_until = until
+
+
+_GEMINI_ROUTING_STATE = GeminiRoutingState()
+_GEMINI_CALL_LOCK = threading.Lock()
+_GEMINI_LAST_CALL_TS = {
+    "value": 0.0,
+}
+_GEMINI_LAST_CALL_LOCK = threading.Lock()
+
+
+def is_gemini_rate_limit_error(error: Exception) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return getattr(error, "code", None) == 429
+    message = str(error).lower()
+    return "429" in message and "too many requests" in message
+
+
+def get_retry_after_seconds(error: Exception, fallback_seconds: float = 0.0) -> float:
+    if isinstance(error, urllib.error.HTTPError):
+        headers = getattr(error, "headers", None)
+        if headers:
+            raw = headers.get("Retry-After")
+            if raw:
+                try:
+                    parsed = float(str(raw).strip())
+                    if parsed > 0:
+                        return parsed
+                except Exception:
+                    pass
+    return max(0.0, fallback_seconds)
+
+
+def get_gemini_cooldown_remaining_seconds() -> float:
+    local = _GEMINI_ROUTING_STATE.cooldown_remaining()
+    # Also check cross-process cooldown (may have been set by analyze_lyrics)
+    try:
+        from gemini_semaphore import GEMINI_COOLDOWN as _XPROC_CD
+        xproc = _XPROC_CD.remaining()
+    except ImportError:
+        xproc = 0.0
+    return max(local, xproc)
+
+
+def activate_gemini_cooldown(seconds: int) -> None:
+    _GEMINI_ROUTING_STATE.activate_cooldown(seconds)
+    # Also propagate to cross-process cooldown file so analyze_lyrics respects it
+    try:
+        from gemini_semaphore import GEMINI_COOLDOWN as _XPROC_CD
+        _XPROC_CD.activate(seconds)
+    except ImportError:
+        pass
+
+
+def call_gemini_serialized(callable_fn):
+    """
+    Serialize Gemini requests and enforce a minimum interval between calls.
+    This significantly reduces 429 spikes when the image stage runs in parallel.
+    Also acquires cross-process global concurrency slot via gemini_semaphore.
+    """
+    try:
+        from gemini_semaphore import gemini_global_slot
+    except ImportError:
+        gemini_global_slot = None
+
+    min_interval = max(0.0, parse_float_env("GEMINI_MIN_INTERVAL_SECONDS", 6.0))
+
+    def _inner():
+        with _GEMINI_CALL_LOCK:
+            if min_interval > 0:
+                with _GEMINI_LAST_CALL_LOCK:
+                    last_ts = _GEMINI_LAST_CALL_TS["value"]
+                elapsed = time.time() - last_ts if last_ts > 0 else min_interval
+                if elapsed < min_interval:
+                    wait_seconds = min_interval - elapsed
+                    print(
+                        f"  ⏳ Gemini pacing wait {wait_seconds:.1f}s",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds)
+            try:
+                return callable_fn()
+            finally:
+                with _GEMINI_LAST_CALL_LOCK:
+                    _GEMINI_LAST_CALL_TS["value"] = time.time()
+
+    if gemini_global_slot is not None:
+        with gemini_global_slot("generate_images"):
+            return _inner()
+    return _inner()
 
 
 def resolve_hand_lora_mode() -> str:
@@ -182,10 +343,16 @@ def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
         "chasing", "action shot", "dynamic motion", "race", "sports", "combat",
         "nadando", "corriendo", "saltando", "deporte", "accion",
     ]
+    multi_person_keywords = [
+        "group", "group of", "friends", "family", "crowd", "many people", "multiple people",
+        "children", "kids", "parents", "couple", "team", "people",
+        "grupo", "familia", "multitud", "mucha gente", "personas",
+    ]
 
     has_text_heavy = any(keyword in text for keyword in text_keywords)
     has_crowd = any(keyword in text for keyword in crowd_keywords)
     has_action = any(keyword in text for keyword in action_keywords)
+    has_multi_person = any(keyword in text for keyword in multi_person_keywords)
     if isinstance(verse_type, str) and verse_type.strip().upper() == "RHYTHMIC":
         has_action = True
 
@@ -193,6 +360,7 @@ def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
         "textHeavy": has_text_heavy,
         "crowd": has_crowd,
         "action": has_action,
+        "multiPerson": has_multi_person,
     }
 
 
@@ -223,6 +391,8 @@ def should_route_to_gemini(base_provider: str, prompt: str, verse_type: str = No
         reasons.append("crowd")
     if traits["action"]:
         reasons.append("action")
+    if traits["multiPerson"]:
+        reasons.append("multi_person")
 
     if not reasons:
         return False, ""
@@ -231,7 +401,70 @@ def should_route_to_gemini(base_provider: str, prompt: str, verse_type: str = No
 # Output directory for generated images
 OUTPUT_DIR = os.path.join(root_dir, 'output', 'images')
 LORAS_DIR = os.path.join(root_dir, "ComfyUI", "models", "loras")
+COMFYUI_WORKFLOW_TEMPLATE_PATH = os.path.join(
+    current_dir, "workflows", "comfyui_sdxl_base_workflow.json"
+)
 _STYLE_LORA_CACHE = {}
+_WORKFLOW_TEMPLATE_CACHE = None
+
+# Node IDs that generate_with_comfyui() writes to unconditionally.
+# If any is missing from the template, the pipeline will crash at image time.
+_WORKFLOW_REQUIRED_NODES: dict[str, list[str]] = {
+    "3": ["cfg", "model", "sampler_name", "seed", "steps"],      # KSampler
+    "4": ["ckpt_name"],                                            # CheckpointLoaderSimple
+    "5": ["height", "width"],                                      # EmptyLatentImage
+    "6": ["clip", "text"],                                         # CLIPTextEncode (positive)
+    "7": ["clip", "text"],                                         # CLIPTextEncode (negative)
+    "8": ["vae"],                                                  # VAEDecode
+    "9": ["filename_prefix", "images"],                            # SaveImage
+}
+# Optional nodes that may be popped at runtime but must exist in the base template.
+_WORKFLOW_OPTIONAL_NODES: dict[str, list[str]] = {
+    "10": ["model_name"],                                          # UltralyticsDetectorProvider
+    "11": ["guide_size", "steps", "cfg", "denoise", "seed"],      # FaceDetailer
+    "12": ["lora_name", "strength_model", "strength_clip"],        # LoraLoader (hand)
+    "13": ["lora_name", "strength_model", "strength_clip"],        # LoraLoader (style)
+    "14": ["vae_name"],                                            # VAELoader
+}
+
+
+def _validate_workflow_schema(workflow: dict) -> list[str]:
+    """
+    Validate the workflow template against the expected node/input schema.
+    Returns a list of issues (empty = valid).
+    """
+    issues: list[str] = []
+    all_nodes = {**_WORKFLOW_REQUIRED_NODES, **_WORKFLOW_OPTIONAL_NODES}
+    for node_id, required_inputs in all_nodes.items():
+        node = workflow.get(node_id)
+        if node is None:
+            label = "Required" if node_id in _WORKFLOW_REQUIRED_NODES else "Optional"
+            issues.append(f"{label} node '{node_id}' missing from workflow template")
+            continue
+        if "inputs" not in node or not isinstance(node.get("inputs"), dict):
+            issues.append(f"Node '{node_id}' missing 'inputs' dict")
+            continue
+        for key in required_inputs:
+            if key not in node["inputs"]:
+                issues.append(f"Node '{node_id}' missing input key '{key}'")
+    return issues
+
+
+def load_comfyui_workflow_template() -> dict:
+    global _WORKFLOW_TEMPLATE_CACHE
+    if _WORKFLOW_TEMPLATE_CACHE is None:
+        with open(COMFYUI_WORKFLOW_TEMPLATE_PATH, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError("ComfyUI workflow template must be a JSON object")
+        issues = _validate_workflow_schema(loaded)
+        if issues:
+            detail = "; ".join(issues)
+            raise ValueError(
+                f"ComfyUI workflow template schema invalid ({len(issues)} issue(s)): {detail}"
+            )
+        _WORKFLOW_TEMPLATE_CACHE = loaded
+    return copy.deepcopy(_WORKFLOW_TEMPLATE_CACHE)
 
 def normalize_style_name(style: str) -> str:
     value = (style or "").strip().lower()
@@ -668,6 +901,40 @@ def check_comfyui_queue_status(comfyui_url: str):
     except Exception:
         return "down"
 
+
+def interrupt_comfyui_prompt(comfyui_url: str, prompt_id: str = "") -> None:
+    """
+    Best-effort interruption for stuck ComfyUI jobs.
+    This avoids lingering executions after stall/timeout.
+    """
+    try:
+        req = urllib.request.Request(
+            f"{comfyui_url}/interrupt",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:
+        pass
+
+    if not prompt_id:
+        return
+
+    try:
+        payload = json.dumps({"delete": [prompt_id]}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{comfyui_url}/queue",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:
+        pass
+
 def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, height: int = 720, scene_index: int = 0, checkpoint: str = None, negative_prompt: str = None, project_id: str = None, verse_type: str = None, has_protagonist: bool = True, ai_optimization: dict = None) -> str:
     """
     Generate image using local ComfyUI server.
@@ -936,6 +1203,20 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
     apply_crowd_clamp = parse_bool_env("COMFYUI_CROWD_CLAMP_ENABLED", False)
 
     if is_multi_person_scene and style_norm not in ['anime', 'ui design', 'stitch']:
+        # For groups/crowds, avoid cinematic shallow-DoF because it smears background faces.
+        full_prompt = re.sub(
+            r"\bshallow depth of field\b,?\s*",
+            "deep depth of field, ",
+            full_prompt,
+            flags=re.IGNORECASE
+        ).strip(" ,")
+        quality_suffix = re.sub(
+            r"\bshallow depth of field\b,?\s*",
+            "",
+            quality_suffix,
+            flags=re.IGNORECASE
+        ).strip(" ,")
+
         if apply_crowd_clamp:
             # Optional safeguard for lower-end models.
             full_prompt = re.sub(r"\bmassive crowd\b", "small group of people", full_prompt, flags=re.IGNORECASE)
@@ -950,12 +1231,25 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
                 ", coherent crowd composition, preserve visible identities in foreground, "
                 "realistic eyes and facial symmetry, natural hand positioning"
             )
+        quality_suffix += (
+            ", natural mouth anatomy, clean lip contours, realistic teeth spacing, "
+            "balanced smile shapes, no melted lips, deep depth of field, "
+            "group portrait clarity, midground/background people readable"
+        )
+        quality_suffix += (
+            ", medium-wide group shot, eye-level camera, all faces fully visible, "
+            "all subjects on a similar focal plane, no face cropped by frame edge, "
+            "no face occlusion"
+        )
         negative_prompt += (
             ", giant crowd, tiny distant faces, face blur, deformed face, malformed face, asymmetrical face, "
             "distorted eyes, fused fingers, joined fingers, hand merged with arm, arm merged with torso, "
             "overlapping limbs, tangled limbs, extra digits, posed hands, palms facing camera, "
             "hand close-up, hands dominating foreground, hand fused with cheek, hand fused with face, "
-            "palm stuck to face, all people touching face"
+            "palm stuck to face, all people touching face, malformed smile, blurry mouth, "
+            "plastic teeth, doubled teeth rows, melted lips, broken jawline, "
+            "extreme bokeh, shallow focus, background people out of focus, smeared background faces, "
+            "face cut off by frame, cropped forehead, cropped chin, blocked face"
         )
 
         if not is_lightning_model:
@@ -1082,13 +1376,31 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
     face_detailer_steps = 6
     face_detailer_cfg = 1.5
     face_detailer_denoise = 0.25
+    face_detailer_cycle = 1
+    face_detailer_max_size = 1024
+    face_detailer_bbox_threshold = 0.5
+    face_detailer_bbox_dilation = 10
+    face_detailer_bbox_crop_factor = 3.0
+    face_detailer_drop_size = 10
 
     if is_multi_person_scene:
         # Stronger face refinement for group scenes.
-        face_detailer_guide_size = 576
-        face_detailer_steps = 12
-        face_detailer_cfg = 2.8
-        face_detailer_denoise = 0.35
+        face_detailer_guide_size = 640
+        face_detailer_steps = 16
+        face_detailer_cfg = 3.2
+        face_detailer_denoise = 0.30
+        face_detailer_cycle = 2
+        face_detailer_max_size = 1536
+        face_detailer_bbox_threshold = 0.38
+        face_detailer_bbox_dilation = 14
+        face_detailer_bbox_crop_factor = 3.3
+        face_detailer_drop_size = 4
+    elif has_people_scene:
+        # Medium profile for single-person scenes where mouth/face still matters.
+        face_detailer_guide_size = 448
+        face_detailer_steps = 8
+        face_detailer_cfg = 1.9
+        face_detailer_denoise = 0.26
 
     # Model source chain: checkpoint -> optional style LoRA -> optional hand LoRA
     base_model_source = ["4", 0]
@@ -1113,160 +1425,67 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
         image_output_source = ["8", 0]   # Direct from VAEDecode (bypass FaceDetailer)
         print(f"  ⚠️ FaceDetailer DISABLED for isolation test", file=sys.stderr)
 
-    # Basic text-to-image workflow
-    workflow = {
-        "3": {
-            "class_type": "KSampler",
-            "inputs": {
-                "cfg": cfg,
-                "denoise": 1,
-                "latent_image": ["5", 0],
-                "model": model_source,  # Checkpoint or LoRA chain source
-                "negative": ["7", 0],
-                "positive": ["6", 0],
-                "sampler_name": sampler,
-                "scheduler": "karras",
-                "seed": scene_seed,  # Consistent protagonist seed
-                "steps": steps
-            }
-        },
-        "4": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {
-                "ckpt_name": model_checkpoint if model_checkpoint else "put_your_model_here.safetensors"
-            }
-        },
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {
-                "batch_size": 1,
-                "height": height,
-                "width": width
-            }
-        },
-        "6": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": clip_source,  # Checkpoint or LoRA chain source
-                "text": full_prompt
-            }
-        },
-        "7": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": clip_source,  # Checkpoint or LoRA chain source
-                "text": negative_prompt
-            }
-        },
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {
-                "samples": ["3", 0],
-                "vae": ["14", 0] if use_explicit_vae else ["4", 2]  # Use explicit VAE if available
-            }
-        },
-        "9": {
-            "class_type": "SaveImage",
-            "inputs": {
-                # Include project_id for absolute traceability
-                "filename_prefix": f"project_{project_id}_scene_{scene_index}",
-                "images": image_output_source  # FaceDetailer or direct VAEDecode based on flag
-            }
-        }
-    }
+    workflow = load_comfyui_workflow_template()
+    workflow["3"]["inputs"]["cfg"] = cfg
+    workflow["3"]["inputs"]["model"] = model_source
+    workflow["3"]["inputs"]["sampler_name"] = sampler
+    workflow["3"]["inputs"]["seed"] = scene_seed
+    workflow["3"]["inputs"]["steps"] = steps
+    workflow["4"]["inputs"]["ckpt_name"] = (
+        model_checkpoint if model_checkpoint else "put_your_model_here.safetensors"
+    )
+    workflow["5"]["inputs"]["height"] = height
+    workflow["5"]["inputs"]["width"] = width
+    workflow["6"]["inputs"]["clip"] = clip_source
+    workflow["6"]["inputs"]["text"] = full_prompt
+    workflow["7"]["inputs"]["clip"] = clip_source
+    workflow["7"]["inputs"]["text"] = negative_prompt
+    workflow["8"]["inputs"]["vae"] = ["14", 0] if use_explicit_vae else ["4", 2]
+    workflow["9"]["inputs"]["filename_prefix"] = f"project_{project_id}_scene_{scene_index}"
+    workflow["9"]["inputs"]["images"] = image_output_source
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # VAELoader Node: Add only when explicit VAE is available
-    # This prevents "deep fried" look from baked VAEs in some checkpoints
-    # ═══════════════════════════════════════════════════════════════════════════
     if use_explicit_vae:
-        workflow["14"] = {
-            "class_type": "VAELoader",
-            "inputs": {
-                "vae_name": "sdxl_vae.safetensors"
-            }
-        }
+        workflow["14"]["inputs"]["vae_name"] = "sdxl_vae.safetensors"
+    else:
+        workflow.pop("14", None)
 
     if use_style_lora:
-        workflow["13"] = {
-            "class_type": "LoraLoader",
-            "inputs": {
-                "lora_name": style_lora_filename,
-                "strength_model": style_lora_strength_model,
-                "strength_clip": style_lora_strength_clip,
-                "model": ["4", 0],
-                "clip": ["4", 1]
-            }
-        }
+        workflow["13"]["inputs"]["lora_name"] = style_lora_filename
+        workflow["13"]["inputs"]["strength_model"] = style_lora_strength_model
+        workflow["13"]["inputs"]["strength_clip"] = style_lora_strength_clip
+        workflow["13"]["inputs"]["model"] = ["4", 0]
+        workflow["13"]["inputs"]["clip"] = ["4", 1]
+    else:
+        workflow.pop("13", None)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LoRA Loader Node: Add only when use_hand_lora is True
-    # CURRENTLY DISABLED: "hand 5.5" is likely SD1.5 LoRA incompatible with SDXL
-    # ═══════════════════════════════════════════════════════════════════════════
     if use_hand_lora:
-        workflow["12"] = {
-            "class_type": "LoraLoader",
-            "inputs": {
-                "lora_name": lora_filename,
-                "strength_model": lora_strength_model,
-                "strength_clip": lora_strength_clip,
-                "model": base_model_source,
-                "clip": base_clip_source
-            }
-        }
+        workflow["12"]["inputs"]["lora_name"] = lora_filename
+        workflow["12"]["inputs"]["strength_model"] = lora_strength_model
+        workflow["12"]["inputs"]["strength_clip"] = lora_strength_clip
+        workflow["12"]["inputs"]["model"] = base_model_source
+        workflow["12"]["inputs"]["clip"] = base_clip_source
+    else:
+        workflow.pop("12", None)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # FaceDetailer Nodes: Add only when use_face_detailer is True
-    # CURRENTLY DISABLED: Testing if FaceDetailer causes green tint artifacts
-    # ═══════════════════════════════════════════════════════════════════════════
     if use_face_detailer:
-        # Face detection using YOLO
-        workflow["10"] = {
-            "class_type": "UltralyticsDetectorProvider",
-            "inputs": {
-                "model_name": "bbox/face_yolov8m.pt"
-            }
-        }
-        # FaceDetailer to fix faces
-        workflow["11"] = {
-            "class_type": "FaceDetailer",
-            "inputs": {
-                "image": ["8", 0],
-                "model": model_source,
-                "clip": clip_source,
-                "vae": ["14", 0] if use_explicit_vae else ["4", 2],
-                "positive": ["6", 0],
-                "negative": ["7", 0],
-                "bbox_detector": ["10", 0],
-                "sam_model_opt": None,
-                "segm_detector_opt": None,
-                "detailer_hook": None,
-                "guide_size": face_detailer_guide_size,
-                "guide_size_for": True,
-                "max_size": 1024,
-                "seed": scene_seed,
-                "steps": face_detailer_steps,
-                "cfg": face_detailer_cfg,
-                "sampler_name": "dpmpp_2m",
-                "scheduler": "karras",
-                "denoise": face_detailer_denoise,
-                "feather": 5,
-                "noise_mask": True,
-                "force_inpaint": True,
-                "bbox_threshold": 0.5,
-                "bbox_dilation": 10,
-                "bbox_crop_factor": 3.0,
-                "sam_detection_hint": "center-1",
-                "sam_dilation": 0,
-                "sam_threshold": 0.93,
-                "sam_bbox_expansion": 0,
-                "sam_mask_hint_threshold": 0.7,
-                "sam_mask_hint_use_negative": "False",
-                "drop_size": 10,
-                "wildcard": "",
-                "cycle": 1
-            }
-        }
+        workflow["10"]["inputs"]["model_name"] = "bbox/face_yolov8m.pt"
+        workflow["11"]["inputs"]["model"] = model_source
+        workflow["11"]["inputs"]["clip"] = clip_source
+        workflow["11"]["inputs"]["vae"] = ["14", 0] if use_explicit_vae else ["4", 2]
+        workflow["11"]["inputs"]["guide_size"] = face_detailer_guide_size
+        workflow["11"]["inputs"]["max_size"] = face_detailer_max_size
+        workflow["11"]["inputs"]["seed"] = scene_seed
+        workflow["11"]["inputs"]["steps"] = face_detailer_steps
+        workflow["11"]["inputs"]["cfg"] = face_detailer_cfg
+        workflow["11"]["inputs"]["denoise"] = face_detailer_denoise
+        workflow["11"]["inputs"]["bbox_threshold"] = face_detailer_bbox_threshold
+        workflow["11"]["inputs"]["bbox_dilation"] = face_detailer_bbox_dilation
+        workflow["11"]["inputs"]["bbox_crop_factor"] = face_detailer_bbox_crop_factor
+        workflow["11"]["inputs"]["drop_size"] = face_detailer_drop_size
+        workflow["11"]["inputs"]["cycle"] = face_detailer_cycle
+    else:
+        workflow.pop("10", None)
+        workflow.pop("11", None)
     
     # Queue the prompt
     prompt_data = {
@@ -1292,9 +1511,13 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
         
         print(f"  ComfyUI: Queued prompt {prompt_id} for scene {scene_index}", file=sys.stderr)
         
-        # Poll for completion (max 10 minutes)
-        max_wait = 600
+        # Poll for completion (scene-level timeout with optional stall cutoff)
+        max_wait = max(30, parse_int_env("COMFYUI_SCENE_TIMEOUT_SECONDS", 300))
+        stall_timeout_seconds = max(0, parse_int_env("COMFYUI_STALL_TIMEOUT_SECONDS", 0))
         start_time = time.time()
+        last_queue_status = ""
+        last_history_signature = ""
+        last_status_change_at = start_time
         
         while time.time() - start_time < max_wait:
             elapsed = int(time.time() - start_time)
@@ -1302,6 +1525,9 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
             # Emit periodic polling event with server status
             if elapsed % 10 == 0:
                 server_status = check_comfyui_queue_status(comfyui_url)
+                if server_status != last_queue_status:
+                    last_queue_status = server_status
+                    last_status_change_at = time.time()
                 message = f"ComfyUI: {server_status} | Scene {scene_index+1} ({elapsed}s elapsed)"
                 
                 poll_event = {
@@ -1331,6 +1557,15 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
                     if prompt_id in history:
                         prompt_data = history[prompt_id]
                         status = prompt_data.get('status', {})
+                        outputs = prompt_data.get('outputs', {})
+
+                        history_signature = (
+                            f"{status.get('status_str')}|{status.get('completed')}|"
+                            f"{len(status.get('messages', []))}|{len(outputs)}"
+                        )
+                        if history_signature != last_history_signature:
+                            last_history_signature = history_signature
+                            last_status_change_at = time.time()
 
                         # Check if job failed
                         if status.get('status_str') == 'error':
@@ -1339,7 +1574,6 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
 
                         # Check if job completed
                         if status.get('completed', False) or status.get('status_str') == 'success':
-                            outputs = prompt_data.get('outputs', {})
                             # Find the SaveImage output
                             for node_id, output in outputs.items():
                                 if 'images' in output:
@@ -1375,12 +1609,22 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
             except Exception as e:
                 print(f"  Error polling history: {e}", file=sys.stderr)
 
+            if stall_timeout_seconds > 0 and (time.time() - last_status_change_at) >= stall_timeout_seconds:
+                interrupt_comfyui_prompt(comfyui_url, prompt_id)
+                raise Exception(
+                    f"ComfyUI scene stalled after {stall_timeout_seconds}s without status change"
+                )
+
             time.sleep(2)
         
+        interrupt_comfyui_prompt(comfyui_url, prompt_id)
         raise Exception(f"ComfyUI generation timed out after {max_wait}s")
-        
+
     except urllib.error.URLError as e:
         raise Exception(f"Cannot connect to ComfyUI at {comfyui_url}. Is it running? Error: {e}")
+    except Exception:
+        interrupt_comfyui_prompt(comfyui_url, prompt_id)
+        raise
 
 def generate_mock_image(prompt: str, index: int) -> str:
     """Generate a mock placeholder image URL for testing"""
@@ -1447,91 +1691,178 @@ def generate_scene_asset(
     """Generate one scene image (thread-safe worker function)."""
     actual_provider = provider
     scene_generation_error = None
+    selected_provider = provider
+    routing_reason = ""
+    slo_mitigation = get_slo_mitigation_runtime()
+    mitigation_early_failover = bool(
+        slo_mitigation.get("active") and slo_mitigation.get("earlyFailover")
+    )
 
     try:
-        selected_provider = provider
-        routing_reason = ""
-        should_use_gemini, routing_reason = should_route_to_gemini(provider, prompt, scene_verse_type)
-        if provider != "gemini" and should_use_gemini:
-            selected_provider = "gemini"
-            print(
-                f"  🧠 Smart routing scene {scene_index}: {provider} -> gemini "
-                f"(reason={routing_reason})",
-                file=sys.stderr,
-            )
-
-        if selected_provider == "mock":
-            image_url = generate_mock_image(prompt, scene_index)
-        elif selected_provider == "replicate":
-            image_url = generate_with_replicate(prompt, visual_style, api_token)
-        elif selected_provider == "gemini":
-            try:
-                image_url = generate_with_gemini_image(
-                    prompt,
-                    visual_style,
+        def generate_with_provider(target_provider: str) -> str:
+            if target_provider == "mock":
+                return generate_mock_image(prompt, scene_index)
+            if target_provider == "replicate":
+                return generate_with_replicate(prompt, visual_style, api_token)
+            if target_provider == "picsum":
+                return generate_with_picsum(img_width, img_height, seed=scene_index)
+            if target_provider == "artic":
+                return generate_with_artic(prompt, scene_index)
+            if target_provider == "comfyui":
+                return generate_with_comfyui(
+                    prompt, visual_style,
+                    scene_index=scene_index,
                     width=img_width,
                     height=img_height,
-                    scene_index=scene_index,
                     project_id=project_id,
+                    verse_type=scene_verse_type,
+                    ai_optimization=ai_optimization
                 )
-            except Exception as gemini_error:
-                if provider != "gemini":
-                    print(
-                        f"  ⚠️ Gemini routing fallback scene {scene_index}: {gemini_error}. "
-                        f"Retrying with base provider {provider}.",
-                        file=sys.stderr,
+            if target_provider == "gemini":
+                return call_gemini_serialized(
+                    lambda: generate_with_gemini_image(
+                        prompt,
+                        visual_style,
+                        width=img_width,
+                        height=img_height,
+                        scene_index=scene_index,
+                        project_id=project_id,
                     )
-                    selected_provider = provider
-                    if selected_provider == "comfyui":
-                        image_url = generate_with_comfyui(
-                            prompt, visual_style,
-                            scene_index=scene_index,
-                            width=img_width,
-                            height=img_height,
-                            project_id=project_id,
-                            verse_type=scene_verse_type,
-                            ai_optimization=ai_optimization
-                        )
-                    elif selected_provider == "replicate":
-                        image_url = generate_with_replicate(prompt, visual_style, api_token)
-                    elif selected_provider == "picsum":
-                        image_url = generate_with_picsum(img_width, img_height, seed=scene_index)
-                    elif selected_provider == "artic":
-                        image_url = generate_with_artic(prompt, scene_index)
-                    else:
-                        image_url = generate_with_pollinations(
-                            prompt,
-                            visual_style,
-                            width=img_width,
-                            height=img_height,
-                            scene_index=scene_index
-                        )
-                else:
-                    raise gemini_error
-        elif selected_provider == "picsum":
-            image_url = generate_with_picsum(img_width, img_height, seed=scene_index)
-        elif selected_provider == "artic":
-            image_url = generate_with_artic(prompt, scene_index)
-        elif selected_provider == "comfyui":
-            image_url = generate_with_comfyui(
-                prompt, visual_style,
-                scene_index=scene_index,
-                width=img_width,
-                height=img_height,
-                project_id=project_id,
-                verse_type=scene_verse_type,
-                ai_optimization=ai_optimization
-            )
-            actual_provider = "comfyui"
-        else:
-            image_url = generate_with_pollinations(
+                )
+            return generate_with_pollinations(
                 prompt,
                 visual_style,
                 width=img_width,
                 height=img_height,
                 scene_index=scene_index
             )
-            actual_provider = selected_provider
+
+        should_use_gemini, routing_reason = should_route_to_gemini(provider, prompt, scene_verse_type)
+        if mitigation_early_failover:
+            should_use_gemini = False
+            routing_reason = (
+                f"{routing_reason},slo_mitigation_early_failover"
+                if routing_reason
+                else "slo_mitigation_early_failover"
+            )
+            if provider == "gemini":
+                selected_provider = "pollinations"
+                print(
+                    f"  🚦 SLO mitigation active: scene {scene_index} provider forced gemini->pollinations",
+                    file=sys.stderr,
+                )
+        routing_reason_tokens = {token.strip() for token in (routing_reason or "").split(",") if token.strip()}
+        strict_quality_reasons = {"multi_person", "action", "text"}
+        strict_multi_person_mode = parse_bool_env("GEMINI_STRICT_MULTI_PERSON_MODE", True)
+        strict_gemini_required = bool(routing_reason_tokens & strict_quality_reasons) and strict_multi_person_mode
+        strict_cooldown_mode = parse_bool_env("GEMINI_STRICT_COOLDOWN_MODE", True)
+        if provider != "gemini" and should_use_gemini:
+            cooldown_remaining = get_gemini_cooldown_remaining_seconds()
+            if cooldown_remaining > 0:
+                if strict_cooldown_mode:
+                    # STRICT MODE: ALL Gemini-routed scenes wait — never bypass
+                    print(
+                        f"  ⏳ Gemini cooldown active ({cooldown_remaining:.0f}s). "
+                        f"Scene {scene_index} waiting (strict cooldown mode).",
+                        file=sys.stderr,
+                    )
+                    time.sleep(cooldown_remaining)
+                elif not strict_gemini_required:
+                    # Legacy bypass: non-strict scenes fall back to base provider
+                    print(
+                        f"  ⏳ Gemini cooldown active ({cooldown_remaining:.0f}s). "
+                        f"Scene {scene_index} uses base provider {provider}.",
+                        file=sys.stderr,
+                    )
+                    selected_provider = provider
+                else:
+                    print(
+                        f"  ⏳ Gemini cooldown active ({cooldown_remaining:.0f}s). "
+                        f"Scene {scene_index} is strict, waiting and keeping Gemini route.",
+                        file=sys.stderr,
+                    )
+            if selected_provider != provider:  # not bypassed
+                selected_provider = "gemini"
+                print(
+                    f"  🧠 Smart routing scene {scene_index}: {provider} -> gemini "
+                    f"(reason={routing_reason})",
+                    file=sys.stderr,
+                )
+
+        if selected_provider == "gemini":
+            default_attempts = 5 if strict_gemini_required else 2
+            configured_attempts = parse_int_env("GEMINI_ROUTING_MAX_ATTEMPTS", default_attempts)
+            gemini_attempts = max(1, configured_attempts)
+            if strict_gemini_required:
+                gemini_attempts = max(gemini_attempts, default_attempts)
+            cooldown_seconds = max(0, parse_int_env("GEMINI_ROUTING_COOLDOWN_SECONDS", 90))
+            default_backoff = 12.0 if strict_gemini_required else 1.5
+            retry_backoff = max(0.0, parse_float_env("GEMINI_ROUTING_RETRY_BACKOFF_SECONDS", default_backoff))
+            if strict_gemini_required:
+                retry_backoff = max(retry_backoff, default_backoff)
+            strict_wait_cap = max(0.0, parse_float_env("GEMINI_STRICT_WAIT_CAP_SECONDS", 180.0))
+            last_gemini_error = None
+            image_url = None
+
+            for attempt in range(1, gemini_attempts + 1):
+                # Always respect cooldown before each attempt (strict mode)
+                cooldown_remaining = get_gemini_cooldown_remaining_seconds()
+                if cooldown_remaining > 0:
+                    print(
+                        f"  ⏳ Gemini cooldown wait {cooldown_remaining:.1f}s "
+                        f"(scene {scene_index}, attempt {attempt}/{gemini_attempts})",
+                        file=sys.stderr,
+                    )
+                    time.sleep(cooldown_remaining)
+                try:
+                    image_url = generate_with_provider("gemini")
+                    break
+                except Exception as gemini_error:
+                    last_gemini_error = gemini_error
+                    is_rate_limited = is_gemini_rate_limit_error(gemini_error)
+                    if is_rate_limited:
+                        activate_gemini_cooldown(cooldown_seconds)
+                        print(
+                            f"  ⚠️ Gemini rate-limited on scene {scene_index} "
+                            f"(attempt {attempt}/{gemini_attempts}).",
+                            file=sys.stderr,
+                        )
+                    if attempt < gemini_attempts:
+                        backoff_wait = retry_backoff * attempt if retry_backoff > 0 else 0.0
+                        jitter = apply_backoff_jitter(backoff_wait)
+                        if is_rate_limited:
+                            retry_after = get_retry_after_seconds(gemini_error, jitter)
+                            wait_seconds = retry_after + apply_backoff_jitter(retry_backoff)
+                        else:
+                            wait_seconds = jitter
+                        # Always respect cooldown (strict mode — no bypass)
+                        cooldown_remaining = get_gemini_cooldown_remaining_seconds()
+                        wait_seconds = max(wait_seconds, cooldown_remaining)
+                        if strict_wait_cap > 0:
+                            wait_seconds = min(wait_seconds, strict_wait_cap)
+                        if wait_seconds > 0:
+                            print(
+                                f"  ⏳ Gemini retry wait {wait_seconds:.1f}s "
+                                f"(scene {scene_index}, attempt {attempt}/{gemini_attempts})",
+                                file=sys.stderr,
+                            )
+                            time.sleep(wait_seconds)
+                        continue
+
+            if image_url is None:
+                if provider != "gemini":
+                    print(
+                        f"  ⚠️ Gemini fallback scene {scene_index}: failed after "
+                        f"{gemini_attempts} attempts ({last_gemini_error}). "
+                        f"Using base provider {provider}.",
+                        file=sys.stderr,
+                    )
+                    selected_provider = provider
+                    image_url = generate_with_provider(selected_provider)
+                else:
+                    raise last_gemini_error
+        else:
+            image_url = generate_with_provider(selected_provider)
 
         if selected_provider == "gemini":
             actual_provider = "gemini"
@@ -1541,13 +1872,55 @@ def generate_scene_asset(
         web_image_url = to_web_url(image_url)
     except Exception as scene_err:
         scene_generation_error = scene_err
-        print(
-            f"  Warning: scene {scene_index} generation failed, using fallback placeholder. "
-            f"Error: {scene_err}",
-            file=sys.stderr
-        )
-        web_image_url = build_fallback_image_data(scene_index, prompt, str(scene_err))["imageUrl"]
-        actual_provider = "mock"
+        comfy_failed = provider == "comfyui" or selected_provider == "comfyui" or actual_provider == "comfyui"
+        failover_recovered = False
+
+        if comfy_failed:
+            allowed_failover = {"pollinations", "replicate", "picsum", "artic", "gemini", "mock"}
+            if mitigation_early_failover and "gemini" in allowed_failover:
+                allowed_failover.remove("gemini")
+            configured_failover = parse_csv_env("COMFYUI_FAILOVER_PROVIDERS", "pollinations,mock")
+            failover_chain = []
+            for candidate in configured_failover:
+                if candidate not in allowed_failover:
+                    continue
+                if candidate in {provider, selected_provider, "comfyui"}:
+                    continue
+                if candidate not in failover_chain:
+                    failover_chain.append(candidate)
+            if "mock" not in failover_chain:
+                failover_chain.append("mock")
+
+            for failover_provider in failover_chain:
+                try:
+                    print(
+                        f"  ⚠️ Scene {scene_index}: provider '{selected_provider}' failed ({scene_err}). "
+                        f"Trying failover provider '{failover_provider}'.",
+                        file=sys.stderr,
+                    )
+                    failover_image = generate_with_provider(failover_provider)
+                    web_image_url = to_web_url(failover_image)
+                    actual_provider = failover_provider
+                    failover_recovered = True
+                    print(
+                        f"  ✓ Scene {scene_index}: failover recovered with provider '{failover_provider}'.",
+                        file=sys.stderr,
+                    )
+                    break
+                except Exception as failover_err:
+                    print(
+                        f"  ⚠️ Scene {scene_index}: failover provider '{failover_provider}' failed ({failover_err}).",
+                        file=sys.stderr,
+                    )
+
+        if not failover_recovered:
+            print(
+                f"  Warning: scene {scene_index} generation failed, using fallback placeholder. "
+                f"Error: {scene_err}",
+                file=sys.stderr
+            )
+            web_image_url = build_fallback_image_data(scene_index, prompt, str(scene_err))["imageUrl"]
+            actual_provider = "mock"
 
     return {
         "sceneIndex": scene_index,
@@ -1616,6 +1989,15 @@ def generate_images():
         else:
             provider = "pollinations"  # Default: free AI-generated images
 
+        slo_mitigation = read_slo_mitigation_flag()
+        set_slo_mitigation_runtime(slo_mitigation)
+        if slo_mitigation.get("active") and slo_mitigation.get("earlyFailover"):
+            os.environ["GEMINI_SMART_ROUTING_ENABLED"] = "false"
+            print(
+                "SLO mitigation active: disabling Gemini smart routing for this run",
+                file=sys.stderr,
+            )
+
         print(json.dumps({
             "info": f"Using image provider: {provider}",
             "status": "starting"
@@ -1679,6 +2061,65 @@ def generate_images():
         consecutive_casting_skips = 0
         total_scenes = len(scenes)
         max_workers = resolve_generation_concurrency(provider, total_scenes)
+        stage_timeout_seconds = max(0, parse_int_env("GENERATE_IMAGES_STAGE_TIMEOUT_SEC", 1200))
+        wait_poll_seconds = max(1, parse_int_env("GENERATE_IMAGES_WAIT_POLL_SECONDS", 3))
+        stage_started_at = time.time()
+        stage_deadline = (
+            stage_started_at + stage_timeout_seconds if stage_timeout_seconds > 0 else None
+        )
+
+        def ensure_stage_deadline(context: str):
+            if stage_deadline is None:
+                return
+            if time.time() > stage_deadline:
+                elapsed = int(time.time() - stage_started_at)
+                raise TimeoutError(
+                    f"Image generation stage timed out after {elapsed}s ({context}, limit={stage_timeout_seconds}s)"
+                )
+        strict_multi_person_mode = parse_bool_env("GEMINI_STRICT_MULTI_PERSON_MODE", True)
+        gemini_routing_enabled = parse_bool_env("GEMINI_SMART_ROUTING_ENABLED", True)
+        gemini_api_key_present = bool((os.getenv("GEMINI_API_KEY") or "").strip())
+        has_gemini_routed_scene = provider == "gemini"
+        has_strict_scene = False
+        if gemini_api_key_present and (provider == "gemini" or gemini_routing_enabled):
+            for scene in scenes:
+                scene_prompt = scene.get("visualPrompt", scene.get("description", ""))
+                scene_verse_type = scene.get("verseType", None)
+                if not has_gemini_routed_scene and provider != "gemini":
+                    scene_routes_to_gemini, _ = should_route_to_gemini(provider, scene_prompt, scene_verse_type)
+                    if scene_routes_to_gemini:
+                        has_gemini_routed_scene = True
+                scene_traits = detect_scene_traits(scene_prompt, scene_verse_type)
+                if scene_traits.get("multiPerson") or scene_traits.get("action") or scene_traits.get("textHeavy"):
+                    has_strict_scene = True
+            if has_gemini_routed_scene:
+                gemini_workers = max(1, parse_int_env("GEMINI_EFFECTIVE_CONCURRENCY", 1))
+                old_workers = max_workers
+                max_workers = min(max_workers, gemini_workers)
+                if max_workers != old_workers:
+                    print(
+                        f"  🧵 Gemini effective concurrency active: workers {old_workers}->{max_workers}",
+                        file=sys.stderr,
+                    )
+            if has_strict_scene and strict_multi_person_mode:
+                strict_workers = max(1, parse_int_env("GEMINI_STRICT_CONCURRENCY", 1))
+                old_workers = max_workers
+                max_workers = min(max_workers, strict_workers)
+                if max_workers != old_workers:
+                    print(
+                        f"  🧵 Gemini strict queue active: workers {old_workers}->{max_workers}",
+                        file=sys.stderr,
+                    )
+
+        mitigation_max_concurrency = slo_mitigation.get("maxConcurrency")
+        if slo_mitigation.get("active") and isinstance(mitigation_max_concurrency, int):
+            old_workers = max_workers
+            max_workers = max(1, min(max_workers, mitigation_max_concurrency))
+            if max_workers != old_workers:
+                print(
+                    f"  🚦 SLO mitigation concurrency cap active: workers {old_workers}->{max_workers}",
+                    file=sys.stderr,
+                )
         print(
             f"Parallel generation enabled: workers={max_workers}, provider={provider}, scenes={total_scenes}",
             file=sys.stderr
@@ -1866,10 +2307,13 @@ def generate_images():
         next_scene_to_schedule = 0
         next_scene_to_finalize = 0
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             while next_scene_to_schedule < total_scenes or pending_futures:
+                ensure_stage_deadline("scheduler_loop")
                 # Fill worker queue
                 while next_scene_to_schedule < total_scenes and len(pending_futures) < max_workers:
+                    ensure_stage_deadline("fill_worker_queue")
                     i = next_scene_to_schedule
                     next_scene_to_schedule += 1
 
@@ -1961,7 +2405,14 @@ def generate_images():
                 if not pending_futures:
                     continue
 
-                done, _ = wait(list(pending_futures.keys()), return_when=FIRST_COMPLETED)
+                done, _ = wait(
+                    list(pending_futures.keys()),
+                    timeout=wait_poll_seconds,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    ensure_stage_deadline("await_worker_completion")
+                    continue
                 for future in done:
                     task = pending_futures.pop(future)
                     i = task["sceneIndex"]
@@ -1992,6 +2443,8 @@ def generate_images():
                         break
                     finalize_scene(payload)
                     next_scene_to_finalize += 1
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # Save to database
         db_save_warning = None
@@ -2003,20 +2456,46 @@ def generate_images():
 
         # Output result
         generated_count = len([img for img in generated_images if img["status"] == "success"])
+        real_generated_count = len(
+            [
+                img
+                for img in generated_images
+                if img.get("status") == "success" and not img.get("isFallback")
+            ]
+        )
         failed_count = len([img for img in generated_images if img["status"] == "failed"])
-        degraded = any(img.get("isFallback") for img in generated_images) or bool(db_save_warning)
-        useful_output = generated_count > 0
         total_scenes = len(scenes)
         exposed_count = len([img for img in generated_images if img.get("exposed") is True])
         unexposed_count = len([img for img in generated_images if img.get("exposed") is False])
         fallback_count = len([img for img in generated_images if img.get("isFallback") is True])
+        fallback_ratio = (fallback_count / total_scenes) if total_scenes > 0 else 0.0
+
+        min_real_success = max(0, parse_int_env("IMAGE_GENERATION_MIN_REAL_SUCCESS", 0))
+        max_fallback_ratio = min(
+            1.0,
+            max(0.0, parse_float_env("IMAGE_GENERATION_MAX_FALLBACK_RATIO", 1.0)),
+        )
+        quality_reasons = []
+        if real_generated_count < min_real_success:
+            quality_reasons.append(
+                f"image_generation.real_output_too_low:{real_generated_count}<{min_real_success}"
+            )
+        if fallback_ratio > max_fallback_ratio:
+            quality_reasons.append(
+                f"image_generation.fallback_ratio_too_high:{fallback_ratio:.2f}>{max_fallback_ratio:.2f}"
+            )
+
+        degraded = any(img.get("isFallback") for img in generated_images) or bool(db_save_warning)
+        useful_output = len(quality_reasons) == 0 and generated_count > 0
         exposure_metrics = {
             "totalScenes": total_scenes,
             "generatedCount": generated_count,
+            "realGeneratedCount": real_generated_count,
             "failedCount": failed_count,
             "exposedCount": exposed_count,
             "unexposedCount": unexposed_count,
             "fallbackCount": fallback_count,
+            "fallbackRatio": round(fallback_ratio, 4),
             "exposureRate": (round((exposed_count / total_scenes), 4) if total_scenes > 0 else 0.0),
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -2025,10 +2504,12 @@ def generate_images():
             "success": useful_output,
             "totalScenes": total_scenes,
             "generatedCount": generated_count,
+            "realGeneratedCount": real_generated_count,
             "failedCount": failed_count,
             "images": generated_images,
             "mode": provider,
             "degraded": degraded,
+            "degradedReasons": quality_reasons if quality_reasons else None,
             "dbSaveWarning": db_save_warning,
             "exposureMetrics": exposure_metrics,
         }
@@ -2036,10 +2517,38 @@ def generate_images():
         emit_result(result)
         return result
 
+    except TimeoutError as e:
+        print(f"Warning: {e}", file=sys.stderr)
+        degraded = True
+        useful_output = False
+        timeout_images = (
+            generated_images
+            if "generated_images" in locals() and generated_images
+            else [
+            build_fallback_image_data(0, "generation timeout fallback", str(e))
+            ]
+        )
+        generated_count = len([img for img in timeout_images if img["status"] == "success"])
+        failed_count = len([img for img in timeout_images if img["status"] == "failed"])
+        result = {
+            "status": compute_status(degraded, useful_output),
+            "success": useful_output,
+            "totalScenes": len(scenes) if "scenes" in locals() else 1,
+            "generatedCount": generated_count,
+            "failedCount": failed_count,
+            "images": timeout_images,
+            "mode": provider if "provider" in locals() else "mock",
+            "degraded": degraded,
+            "degradedReasons": ["image_generation.stage_timeout"],
+            "message": "Image generation timed out; returning degraded fallback output.",
+            "error": str(e),
+        }
+        emit_result(result)
+        return result
     except urllib.error.HTTPError as e:
         error_msg = e.read().decode('utf-8', errors='replace')
         degraded = True
-        useful_output = True
+        useful_output = False
         fallback = {
             "status": compute_status(degraded, useful_output),
             "success": useful_output,
@@ -2057,7 +2566,7 @@ def generate_images():
         return fallback
     except Exception as e:
         degraded = True
-        useful_output = True
+        useful_output = False
         fallback = {
             "status": compute_status(degraded, useful_output),
             "success": useful_output,

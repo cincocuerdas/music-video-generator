@@ -282,4 +282,111 @@ describe('Job processors failure paths', () => {
     expect(deps.jobsService.markAsFailed).not.toHaveBeenCalled();
     expect(deps.deadLetterOrchestrator.enqueue).not.toHaveBeenCalled();
   });
+
+  it('treats invalid RESULT_JSON contract as permanent final failure (analysis)', async () => {
+    const deps = createDeps();
+    const processor = new AnalysisProcessor(
+      deps.jobsService as any,
+      deps.deadLetterOrchestrator as any,
+      deps.pythonRunner as any,
+      deps.circuitBreaker as any,
+      deps.eventsGateway as any,
+      deps.sentryService as any,
+    );
+    mockWorker(processor);
+    deps.pythonRunner.runScript.mockResolvedValue({
+      status: 'success',
+      success: true,
+      degraded: false,
+      degradedReasons: 'not-an-array',
+    });
+
+    await expect(processor.process(createJob({}, 0, 3))).rejects.toThrow(
+      'Invalid RESULT_JSON contract: degradedReasons must be an array',
+    );
+
+    expect(deps.jobsService.markAsFailed).toHaveBeenCalledWith(
+      'job-1',
+      'Invalid RESULT_JSON contract: degradedReasons must be an array',
+    );
+    expect(deps.deadLetterOrchestrator.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobType: JobType.ANALYZE_LYRICS,
+        retryable: false,
+        category: 'permanent',
+      }),
+    );
+    expect(deps.jobsService.updateProgress).not.toHaveBeenCalledWith(
+      'job-1',
+      0,
+      expect.stringContaining('Retrying'),
+    );
+  });
+
+  it('marks transient timeout as final failure when retries are exhausted (video render)', async () => {
+    const deps = createDeps();
+    const processor = new VideoRenderProcessor(
+      deps.jobsService as any,
+      deps.deadLetterOrchestrator as any,
+      deps.pythonRunner as any,
+      deps.circuitBreaker as any,
+      deps.eventsGateway as any,
+      deps.sentryService as any,
+    );
+    mockWorker(processor);
+    deps.pythonRunner.runScript.mockRejectedValue(
+      new Error('Request timed out while waiting for provider'),
+    );
+
+    await expect(processor.process(createJob({}, 1, 2))).rejects.toThrow(
+      'Request timed out while waiting for provider',
+    );
+
+    expect(deps.circuitBreaker.recordFailure).toHaveBeenCalledWith(
+      'video-render',
+      'Request timed out while waiting for provider',
+    );
+    expect(deps.jobsService.markAsFailed).toHaveBeenCalledWith(
+      'job-1',
+      'Request timed out while waiting for provider',
+    );
+    expect(deps.deadLetterOrchestrator.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobType: JobType.RENDER_VIDEO,
+        retryable: true,
+        category: 'transient',
+      }),
+    );
+  });
+
+  it('marks circuit-open as final failure when retries are exhausted (youtube download)', async () => {
+    const deps = createDeps();
+    const processor = new YouTubeDownloadProcessor(
+      deps.jobsService as any,
+      deps.deadLetterOrchestrator as any,
+      deps.pythonRunner as any,
+      deps.circuitBreaker as any,
+      deps.eventsGateway as any,
+      deps.sentryService as any,
+    );
+    mockWorker(processor);
+    deps.circuitBreaker.canExecute.mockReturnValue({ allowed: false, retryAfterMs: 9000 });
+
+    await expect(processor.process(createJob({}, 1, 2))).rejects.toThrow(
+      'Circuit open for youtube-download. Retry after 9000ms',
+    );
+
+    expect(deps.pythonRunner.runScript).not.toHaveBeenCalled();
+    expect(deps.jobsService.markAsFailed).toHaveBeenCalledWith(
+      'job-1',
+      'Circuit open for youtube-download. Retry after 9000ms',
+    );
+    expect(deps.deadLetterOrchestrator.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobType: JobType.YOUTUBE_DOWNLOAD,
+        retryable: true,
+        category: 'transient',
+      }),
+    );
+  });
 });

@@ -1,12 +1,12 @@
 ﻿import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, NestInterceptor } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { json as expressJson, urlencoded as expressUrlEncoded } from 'express';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters';
-import { LoggingInterceptor } from './common/interceptors';
+import { LoggingInterceptor, ResponseEnvelopeInterceptor } from './common/interceptors';
 import { resolveCorsConfig } from './common/utils/cors.utils';
 
 function isLoopbackHost(hostname: string): boolean {
@@ -314,6 +314,11 @@ async function bootstrap() {
   )
     .trim()
     .toLowerCase() !== 'false';
+  const responseEnvelopeEnabled = (
+    process.env.API_RESPONSE_ENVELOPE_ENABLED || 'false'
+  )
+    .trim()
+    .toLowerCase() === 'true';
   const host = (configService.get<string>('app.host') || '0.0.0.0').trim();
   const port = configService.get<number>('app.port') ?? 3000;
 
@@ -340,7 +345,12 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(app.get(AllExceptionsFilter));
-  app.useGlobalInterceptors(new LoggingInterceptor());
+  const globalInterceptors: NestInterceptor[] = [new LoggingInterceptor()];
+  if (responseEnvelopeEnabled) {
+    globalInterceptors.push(new ResponseEnvelopeInterceptor());
+    logger.log('Response envelope interceptor enabled');
+  }
+  app.useGlobalInterceptors(...globalInterceptors);
 
   const corsOriginConfig = configService.get<string>('app.corsOrigin', '*');
   const corsConfig = resolveCorsConfig(corsOriginConfig);

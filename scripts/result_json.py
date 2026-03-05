@@ -7,7 +7,7 @@ import io
 import json
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 
 def _ensure_utf8_stdio() -> None:
@@ -100,3 +100,11 @@ def emit_result(payload: Any, *, default_error_code: str = "pipeline") -> Dict[s
     print(f"RESULT_JSON:{output}", file=sys.stderr)
     return normalized
 
+
+def make_emit_result(default_error_code: str) -> Callable[[Any], Dict[str, Any]]:
+    """Factory for script-local emitters with a fixed error code namespace."""
+
+    def _emit(payload: Any) -> Dict[str, Any]:
+        return emit_result(payload, default_error_code=default_error_code)
+
+    return _emit

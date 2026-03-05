@@ -12,7 +12,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
 from env_utils import parse_positive_int_env
 
 try:
@@ -33,15 +34,8 @@ YOUTUBE_DOWNLOAD_STAGE_TIMEOUT_SEC = parse_positive_int_env(
 )
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="youtube_download")
-
-
-def ensure_stage_deadline(deadline_ts: float | None, phase: str) -> None:
-    if deadline_ts is None:
-        return
-    if time.time() > deadline_ts:
-        raise TimeoutError(f"youtube download timeout during {phase}")
+emit_result = make_emit_result("youtube_download")
+ensure_stage_deadline = make_stage_deadline_checker("youtube download")
 
 
 def _available_js_runtimes():
@@ -55,11 +49,22 @@ def _available_js_runtimes():
     return runtimes
 
 
-def _run_yt_dlp(command, timeout_sec: int):
-    return subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout_sec)
+def _run_yt_dlp(command, timeout_sec: int, deadline_ts: float | None = None, phase: str = "yt_dlp"):
+    effective_timeout = bounded_timeout_seconds(
+        deadline_ts,
+        timeout_sec,
+        phase=phase,
+        scope="youtube download",
+    )
+    return subprocess.run(command, check=True, capture_output=True, text=True, timeout=effective_timeout)
 
 
-def download_audio(youtube_url: str, output_dir: str, video_id: str) -> str:
+def download_audio(
+    youtube_url: str,
+    output_dir: str,
+    video_id: str,
+    deadline_ts: float | None = None,
+) -> str:
     """Download audio from YouTube (keep original audio container when possible)."""
     for ext in ["mp3", "webm", "m4a", "opus", "ogg"]:
         existing_path = os.path.join(output_dir, f"{video_id}.{ext}")
@@ -99,7 +104,7 @@ def download_audio(youtube_url: str, output_dir: str, video_id: str) -> str:
     # Strategy 1: direct download (fast path).
     direct_cmd = base_cmd + [download_url]
     try:
-        _run_yt_dlp(direct_cmd, YTDLP_TIMEOUT_SEC)
+        _run_yt_dlp(direct_cmd, YTDLP_TIMEOUT_SEC, deadline_ts=deadline_ts, phase="yt_dlp_direct")
     except subprocess.TimeoutExpired:
         raise Exception(
             f"yt-dlp timed out after {YTDLP_TIMEOUT_SEC}s during direct download"
@@ -117,7 +122,12 @@ def download_audio(youtube_url: str, output_dir: str, video_id: str) -> str:
             print(f"Trying yt-dlp with {browser} cookies...", file=sys.stderr)
             cookie_cmd = base_cmd + ["--cookies-from-browser", browser, download_url]
             try:
-                _run_yt_dlp(cookie_cmd, YTDLP_TIMEOUT_SEC)
+                _run_yt_dlp(
+                    cookie_cmd,
+                    YTDLP_TIMEOUT_SEC,
+                    deadline_ts=deadline_ts,
+                    phase=f"yt_dlp_cookie:{browser}",
+                )
                 success = True
                 break
             except subprocess.TimeoutExpired:
@@ -252,7 +262,7 @@ def main():
         os.makedirs(cache_dir, exist_ok=True)
 
         ensure_stage_deadline(deadline_ts, "download_audio")
-        audio_path = download_audio(youtube_url, output_dir, video_id)
+        audio_path = download_audio(youtube_url, output_dir, video_id, deadline_ts=deadline_ts)
         ensure_stage_deadline(deadline_ts, "download_thumbnail")
         thumbnail_path = download_thumbnail(youtube_url, cache_dir, video_id)
         if thumbnail_path is None:

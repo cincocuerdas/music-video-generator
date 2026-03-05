@@ -22,7 +22,8 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
 from db_utils import get_db_connection
 from env_utils import parse_float_env, parse_positive_int_env
 
@@ -50,15 +51,8 @@ FINETUNE_GEMINI_STAGE_TIMEOUT_SEC = parse_positive_int_env("FINETUNE_GEMINI_STAG
 GEMINI_TUNING_REQUEST_DELAY_SEC = max(0.0, parse_float_env("GEMINI_TUNING_REQUEST_DELAY_SEC", 0.0))
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="finetune_gemini")
-
-
-def ensure_stage_deadline(deadline_ts: Optional[float], phase: str) -> None:
-    if deadline_ts is None:
-        return
-    if time.time() > deadline_ts:
-        raise TimeoutError(f"finetune timeout during {phase}")
+emit_result = make_emit_result("finetune_gemini")
+ensure_stage_deadline = make_stage_deadline_checker("finetune")
 
 def normalize_text(text: str, max_len: int) -> str:
     value = re.sub(r"\s+", " ", (text or "").strip())
@@ -154,7 +148,12 @@ def api_request(
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        effective_timeout = timeout or GEMINI_TUNING_HTTP_TIMEOUT_SEC
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            timeout or GEMINI_TUNING_HTTP_TIMEOUT_SEC,
+            phase=f"api_request:{method}",
+            scope="finetune",
+        )
         with urllib.request.urlopen(req, timeout=effective_timeout) as response:
             raw = response.read().decode("utf-8")
             if GEMINI_TUNING_REQUEST_DELAY_SEC > 0:

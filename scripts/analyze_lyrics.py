@@ -14,7 +14,8 @@ import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 import random
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
 from env_utils import parse_int_env, parse_positive_int_env
 from gemini_semaphore import (
     backoff_with_jitter,
@@ -61,8 +62,7 @@ def get_db_connection():
     return _get_db_connection()
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="analysis")
+emit_result = make_emit_result("analysis")
 
 
 def get_gemini_api_base_url() -> str:
@@ -166,11 +166,7 @@ def to_reason_list(value: Any) -> List[str]:
     return []
 
 
-def ensure_stage_deadline(deadline_ts: Optional[float], phase: str) -> None:
-    if deadline_ts is None:
-        return
-    if time.time() > deadline_ts:
-        raise TimeoutError(f"analysis timeout during {phase}")
+ensure_stage_deadline = make_stage_deadline_checker("analysis")
 
 def with_result_status(analysis: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(analysis) if isinstance(analysis, dict) else {}
@@ -251,7 +247,7 @@ def save_analysis_result(project_id: str, analysis: dict):
     finally:
         conn.close()
 
-def get_gemini_model(api_key: str) -> str:
+def get_gemini_model(api_key: str, deadline_ts: Optional[float] = None) -> str:
     """Find available Gemini model"""
     base_url = get_gemini_api_base_url()
     list_url = f"{base_url}/v1beta/models?key={api_key}"
@@ -259,7 +255,13 @@ def get_gemini_model(api_key: str) -> str:
     list_timeout_sec = parse_positive_int_env("GEMINI_MODELS_TIMEOUT_SEC", 10)
 
     try:
-        with urllib.request.urlopen(list_url, timeout=list_timeout_sec) as response:
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            list_timeout_sec,
+            phase="gemini_models_list",
+            scope="analysis",
+        )
+        with urllib.request.urlopen(list_url, timeout=effective_timeout) as response:
             data = json.loads(response.read().decode('utf-8'))
             for model in data.get('models', []):
                 if 'generateContent' in model.get('supportedGenerationMethods', []):
@@ -307,10 +309,17 @@ def request_gemini_generate(
 
     last_error = None
     for attempt in range(retries + 1):
-        ensure_stage_deadline(deadline_ts, f"gemini_request:{model}:attempt_{attempt + 1}")
+        request_phase = f"gemini_request:{model}:attempt_{attempt + 1}"
+        ensure_stage_deadline(deadline_ts, request_phase)
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            timeout_sec,
+            phase=request_phase,
+            scope="analysis",
+        )
         req = urllib.request.Request(generate_url, data=json_data, headers=headers, method='POST')
         try:
-            with urllib.request.urlopen(req, timeout=timeout_sec) as response:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as response:
                 response_body = response.read().decode('utf-8')
                 return json.loads(response_body)
         except urllib.error.HTTPError as e:
@@ -336,9 +345,13 @@ def request_gemini_generate(
         raise last_error
     raise Exception(f"Unknown error calling model '{model}'")
 
-def build_candidate_models(api_key: str, primary_language: str = "unknown") -> list:
+def build_candidate_models(
+    api_key: str,
+    primary_language: str = "unknown",
+    deadline_ts: Optional[float] = None,
+) -> list:
     """Use tuned model first, language-aware candidates, then discovered model."""
-    base_model = get_gemini_model(api_key)
+    base_model = get_gemini_model(api_key, deadline_ts=deadline_ts)
     tuned_model = get_tuned_gemini_model()
     multilingual_route = primary_language in MULTILINGUAL_HIGH_CONTEXT_LANGUAGES
     candidate_env_key = (
@@ -723,7 +736,11 @@ def analyze_with_gemini(
             reason="missing-gemini-api-key",
         )
 
-    candidate_models = build_candidate_models(api_key, primary_language=primary_language)
+    candidate_models = build_candidate_models(
+        api_key,
+        primary_language=primary_language,
+        deadline_ts=deadline_ts,
+    )
 
     language_hint = build_language_hint(primary_language)
     style_hint_base = f"The visual style should be: {visual_style}" if visual_style else ""

@@ -20,7 +20,8 @@ import json
 import time
 import queue
 import threading
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
 from env_utils import parse_positive_int_env
 try:
     from dotenv import load_dotenv
@@ -35,15 +36,8 @@ load_dotenv(os.path.join(root_dir, '.env'))
 TRANSCRIPTION_STAGE_TIMEOUT_SEC = parse_positive_int_env("TRANSCRIPTION_STAGE_TIMEOUT_SEC", 1500)
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="transcription")
-
-
-def ensure_stage_deadline(deadline_ts: float | None, phase: str) -> None:
-    if deadline_ts is None:
-        return
-    if time.time() > deadline_ts:
-        raise TimeoutError(f"transcription timeout during {phase}")
+emit_result = make_emit_result("transcription")
+ensure_stage_deadline = make_stage_deadline_checker("transcription")
 
 try:
     from redis_events import emit_progress as emit_redis_progress
@@ -156,10 +150,18 @@ def run_transcription_with_timeout(
     audio_path: str,
     force_language: str = None,
     project_id: str = None,
+    deadline_ts: float | None = None,
 ) -> dict:
-    timeout_sec = parse_positive_int_env("WHISPER_TRANSCRIBE_TIMEOUT_SEC", 900)
-    if timeout_sec <= 0:
+    configured_timeout_sec = parse_positive_int_env("WHISPER_TRANSCRIBE_TIMEOUT_SEC", 900)
+    if configured_timeout_sec <= 0:
         return transcribe_audio(audio_path, force_language=force_language, project_id=project_id)
+
+    timeout_sec = bounded_timeout_seconds(
+        deadline_ts,
+        configured_timeout_sec,
+        phase="whisper_transcription",
+        scope="transcription",
+    )
 
     result_queue: "queue.Queue[tuple[str, object]]" = queue.Queue(maxsize=1)
 
@@ -448,7 +450,11 @@ def main():
         # Transcribe with Whisper (using large-v3 model by default for best vocal detection)
         ensure_stage_deadline(deadline_ts, "whisper_transcription")
         try:
-            transcription = run_transcription_with_timeout(audio_path, project_id=project_id)
+            transcription = run_transcription_with_timeout(
+                audio_path,
+                project_id=project_id,
+                deadline_ts=deadline_ts,
+            )
         except TimeoutError as timeout_error:
             degraded_reasons.append("transcription.timeout")
             emit_progress(project_id, 98, "Whisper timed out; using degraded fallback transcription.")

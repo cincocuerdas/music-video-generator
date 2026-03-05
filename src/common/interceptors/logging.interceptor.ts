@@ -8,6 +8,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { randomUUID } from 'crypto';
+import { toStructuredLog } from '../utils/structured-log.util';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -36,8 +37,7 @@ export class LoggingInterceptor implements NestInterceptor {
       tap(() => {
         const responseTime = Date.now() - now;
         this.logger.log(
-          JSON.stringify({
-            event: 'http.request',
+          toStructuredLog('http.request', {
             cid: correlationId,
             method,
             url,

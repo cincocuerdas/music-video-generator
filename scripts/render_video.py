@@ -13,7 +13,8 @@ import urllib.request
 import tempfile
 import shutil
 from dotenv import load_dotenv
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
 from env_utils import parse_positive_int_env
 from db_utils import get_db_connection
 from ffmpeg_utils import resolve_ffmpeg_path
@@ -35,15 +36,8 @@ FFMPEG_PATH = resolve_ffmpeg_path(root_dir)
 RENDER_VIDEO_STAGE_TIMEOUT_SEC = parse_positive_int_env("RENDER_VIDEO_STAGE_TIMEOUT_SEC", 1800)
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="render_video")
-
-
-def ensure_stage_deadline(deadline_ts: float | None, phase: str) -> None:
-    if deadline_ts is None:
-        return
-    if time.time() > deadline_ts:
-        raise TimeoutError(f"render timeout during {phase}")
+emit_result = make_emit_result("render_video")
+ensure_stage_deadline = make_stage_deadline_checker("render")
 
 def get_project_data(project_id: str) -> dict:
     """Fetch project data including analysis result with images"""
@@ -718,11 +712,17 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
             ffmpeg_timeout_sec = parse_positive_int_env("RENDER_VIDEO_FFMPEG_TIMEOUT_SEC", 900)
             try:
                 ensure_stage_deadline(stage_deadline, "run_ffmpeg")
+                effective_ffmpeg_timeout = bounded_timeout_seconds(
+                    stage_deadline,
+                    ffmpeg_timeout_sec,
+                    phase="run_ffmpeg",
+                    scope="render",
+                )
                 ffmpeg_result = subprocess.run(
                     ffmpeg_cmd,
                     capture_output=True,
                     text=True,
-                    timeout=ffmpeg_timeout_sec if ffmpeg_timeout_sec > 0 else None,
+                    timeout=effective_ffmpeg_timeout,
                 )
             except subprocess.TimeoutExpired:
                 result = build_safe_render_result(
@@ -736,7 +736,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
                     resolution=f"{width}x{height}",
                     frames_used=len(image_files),
                     file_size=0,
-                    warning=f"FFmpeg timed out after {ffmpeg_timeout_sec}s",
+                    warning=f"FFmpeg timed out after {effective_ffmpeg_timeout}s",
                     error_code="render_video.ffmpeg_timeout",
                 )
                 result["renderMetrics"] = render_metrics

@@ -9,11 +9,14 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { SentryService } from '../../modules/observability';
+import { toStructuredLog } from '../utils/structured-log.util';
 
 @Catch()
 @Injectable()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
+  private readonly responseEnvelopeEnabled =
+    (process.env.API_RESPONSE_ENVELOPE_ENABLED || 'false').trim().toLowerCase() === 'true';
 
   constructor(private readonly sentryService: SentryService) {}
 
@@ -32,12 +35,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // Log the full exception for debugging, ignoring harmless favicon errors
     if (request.url !== '/favicon.ico') {
       this.logger.error(
-        JSON.stringify({
-          event: 'http.exception',
+        toStructuredLog('http.exception', {
           cid: correlationId,
           method: request.method,
           url: request.url,
           exceptionType: exception instanceof Error ? exception.name : typeof exception,
+          statusCode:
+            exception instanceof HttpException
+              ? exception.getStatus()
+              : HttpStatus.INTERNAL_SERVER_ERROR,
         }),
         exception instanceof Error ? exception.stack : String(exception),
       );
@@ -71,9 +77,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
         : 'Internal server error';
     const message = typeof rawMessage === 'string' ? rawMessage : (rawMessage as any)?.message;
 
+    const timestamp = new Date().toISOString();
+    if (this.responseEnvelopeEnabled) {
+      response.status(status).json({
+        ok: false,
+        error: {
+          statusCode: status,
+          message,
+        },
+        meta: {
+          timestamp,
+          path: request.url,
+          correlationId,
+        },
+      });
+      return;
+    }
+
     response.status(status).json({
       statusCode: status,
-      timestamp: new Date().toISOString(),
+      timestamp,
       path: request.url,
       correlationId,
       message,

@@ -1,5 +1,5 @@
 import { JobStatus, JobType, ProjectStatus } from '@prisma/client';
-import { JobsService } from './jobs.service';
+import { PipelineLifecycleService } from './services/pipeline-lifecycle.service';
 import { PipelineTransitionService } from './services/pipeline-transition.service';
 
 const now = () => new Date('2026-03-02T00:00:00.000Z');
@@ -29,7 +29,7 @@ const makeJob = (params: {
     updatedAt: new Date(now().getTime() + (params.createdOffsetMs || 0)),
   }) as any;
 
-describe('JobsService.advancePipeline handoff', () => {
+describe('PipelineLifecycleService.advancePipeline handoff', () => {
   const projectId = 'project-1';
 
   const createService = () => {
@@ -48,52 +48,32 @@ describe('JobsService.advancePipeline handoff', () => {
       buildPipelineDefinition: jest.fn(),
       resolveProjectSourceMode: jest.fn(),
     };
-    const jobDispatchService = {
-      dispatch: jest.fn().mockResolvedValue(undefined),
-    };
     const pipelineTransitionService = new PipelineTransitionService();
     const projectPipelineQualityService = {
       appendDegradedMeta: jest.fn().mockResolvedValue(undefined),
       appendStageMetrics: jest.fn().mockResolvedValue(undefined),
       clearMeta: jest.fn().mockResolvedValue(undefined),
     };
-    const styleLoraService = {
-      triggerStyleLoraTraining: jest.fn(),
-      updateStyleLoraConfig: jest.fn(),
-    };
-    const pipelineCancellationService = {
-      cancelPipeline: jest.fn(),
-    };
-    const pipelineStatusService = {
-      getPipelineStatus: jest.fn(),
-    };
 
-    const service = new JobsService(
+    const service = new PipelineLifecycleService(
       prisma as any,
       pipelineOrchestrator as any,
       pipelineTransitionService as any,
-      pipelineStatusService as any,
-      pipelineCancellationService as any,
-      jobDispatchService as any,
       projectPipelineQualityService as any,
-      styleLoraService as any,
     );
 
     return {
       service,
       prisma,
-      queues: {
-        jobDispatchService,
-      },
+      dispatchJob: jest.fn().mockResolvedValue(undefined),
     };
   };
 
   const runHandoffCase = async (params: {
     completed: JobType;
     next: JobType;
-      assertQueue: (queues: ReturnType<typeof createService>['queues']) => jest.Mock;
   }) => {
-    const { service, prisma, queues } = createService();
+    const { service, prisma, dispatchJob } = createService();
     prisma.job.findMany.mockResolvedValue([
       makeJob({
         id: 'job-completed',
@@ -111,22 +91,19 @@ describe('JobsService.advancePipeline handoff', () => {
       }),
     ]);
 
-    const advanced = await service.advancePipeline(projectId);
+    const advanced = await service.advancePipeline(projectId, dispatchJob);
 
     expect(advanced?.type).toBe(params.next);
-    const targetQueueAdd = params.assertQueue(queues);
-    expect(targetQueueAdd).toHaveBeenCalledTimes(1);
-    const [payload] = targetQueueAdd.mock.calls[0];
-    expect(payload.projectId).toBe(projectId);
-    expect(payload.id).toBe('job-next');
-    expect(payload.type).toBe(params.next);
+    expect(dispatchJob).toHaveBeenCalledTimes(1);
+    expect(dispatchJob).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId, id: 'job-next', type: params.next }),
+    );
   };
 
   it('advances YOUTUBE_DOWNLOAD -> TRANSCRIPTION', async () => {
     await runHandoffCase({
       completed: JobType.YOUTUBE_DOWNLOAD,
       next: JobType.TRANSCRIPTION,
-      assertQueue: (queues) => queues.jobDispatchService.dispatch,
     });
   });
 
@@ -134,7 +111,6 @@ describe('JobsService.advancePipeline handoff', () => {
     await runHandoffCase({
       completed: JobType.TRANSCRIPTION,
       next: JobType.ANALYZE_LYRICS,
-      assertQueue: (queues) => queues.jobDispatchService.dispatch,
     });
   });
 
@@ -142,7 +118,6 @@ describe('JobsService.advancePipeline handoff', () => {
     await runHandoffCase({
       completed: JobType.ANALYZE_LYRICS,
       next: JobType.GENERATE_IMAGES,
-      assertQueue: (queues) => queues.jobDispatchService.dispatch,
     });
   });
 
@@ -150,15 +125,11 @@ describe('JobsService.advancePipeline handoff', () => {
     await runHandoffCase({
       completed: JobType.GENERATE_IMAGES,
       next: JobType.RENDER_VIDEO,
-      assertQueue: (queues) => queues.jobDispatchService.dispatch,
     });
   });
 
   it('advances RENDER_VIDEO -> FINALIZE and marks pipeline complete', async () => {
-    const { service, prisma, queues } = createService();
-    const dispatchSpy = jest
-      .spyOn(service as any, 'dispatchJob')
-      .mockResolvedValue(undefined);
+    const { service, prisma, dispatchJob } = createService();
     prisma.job.findMany
       .mockResolvedValueOnce([
         makeJob({
@@ -193,26 +164,24 @@ describe('JobsService.advancePipeline handoff', () => {
         }),
       ]);
 
-    const next = await service.advancePipeline(projectId);
+    const next = await service.advancePipeline(projectId, dispatchJob);
     expect(next?.type).toBe(JobType.FINALIZE);
-    expect(dispatchSpy).toHaveBeenCalledTimes(1);
-    expect(dispatchSpy).toHaveBeenCalledWith(
+    expect(dispatchJob).toHaveBeenCalledTimes(1);
+    expect(dispatchJob).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'job-finalize', type: JobType.FINALIZE }),
     );
 
-    const completion = await service.advancePipeline(projectId);
+    const completion = await service.advancePipeline(projectId, dispatchJob);
     expect(completion).toBeNull();
     expect(prisma.project.update).toHaveBeenCalledTimes(1);
     expect(prisma.project.update).toHaveBeenCalledWith({
       where: { id: projectId },
       data: { status: ProjectStatus.COMPLETED },
     });
-
-    expect(queues.jobDispatchService.dispatch).not.toHaveBeenCalled();
   });
 
   it('returns null when pipeline has running jobs and no pending jobs', async () => {
-    const { service, prisma, queues } = createService();
+    const { service, prisma, dispatchJob } = createService();
     prisma.job.findMany.mockResolvedValue([
       makeJob({
         id: 'job-running',
@@ -222,10 +191,10 @@ describe('JobsService.advancePipeline handoff', () => {
       }),
     ]);
 
-    const result = await service.advancePipeline(projectId);
+    const result = await service.advancePipeline(projectId, dispatchJob);
 
     expect(result).toBeNull();
     expect(prisma.project.update).not.toHaveBeenCalled();
-    expect(queues.jobDispatchService.dispatch).not.toHaveBeenCalled();
+    expect(dispatchJob).not.toHaveBeenCalled();
   });
 });

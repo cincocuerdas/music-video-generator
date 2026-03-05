@@ -31,6 +31,7 @@ export class AuthController {
 
   @Post('login/dev')
   @Throttle(THROTTLE_RULES.authLoginDev)
+  @ApiOperation({ summary: 'Login with development identity and issue session tokens' })
   loginDev(@Req() req: AuthenticatedRequest, @Body() dto: LoginDevDto) {
     return this.authService.loginDev(dto, {
       ipAddress: req.ip,
@@ -52,6 +53,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(200)
   @Throttle(THROTTLE_RULES.authLogout)
+  @ApiOperation({ summary: 'Revoke refresh token and logout session' })
   logout(@Body() dto: LogoutDto) {
     return this.authService.logout(dto.refreshToken);
   }

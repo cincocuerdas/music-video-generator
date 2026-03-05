@@ -38,6 +38,7 @@ export class JobsController {
 
   @Post()
   @Throttle(THROTTLE_RULES.jobsCreate)
+  @ApiOperation({ summary: 'Create a standalone job for a project' })
   create(
     @Req() req: AuthenticatedRequest,
     @Body() createJobDto: CreateJobDto,
@@ -48,6 +49,7 @@ export class JobsController {
 
   @Get('dead-letter')
   @Throttle(THROTTLE_RULES.jobsCreate)
+  @ApiOperation({ summary: 'List dead-letter jobs for current user' })
   listDeadLetter(
     @Req() req: AuthenticatedRequest,
     @Query('limit', new DefaultValuePipe(25), ParseIntPipe) limit: number,
@@ -58,6 +60,7 @@ export class JobsController {
 
   @Post('dead-letter/:id/replay')
   @Throttle(THROTTLE_RULES.jobsPipelineStart)
+  @ApiOperation({ summary: 'Replay a dead-letter job' })
   replayDeadLetter(
     @Req() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -67,6 +70,7 @@ export class JobsController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Get a job by id' })
   findOne(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -77,6 +81,7 @@ export class JobsController {
 
   @Patch(':id')
   @Throttle(THROTTLE_RULES.jobsUpdate)
+  @ApiOperation({ summary: 'Update mutable job fields' })
   update(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -88,6 +93,7 @@ export class JobsController {
 
   @Delete(':id')
   @Throttle(THROTTLE_RULES.jobsDelete)
+  @ApiOperation({ summary: 'Delete a job' })
   remove(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,

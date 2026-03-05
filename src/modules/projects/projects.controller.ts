@@ -63,6 +63,7 @@ export class ProjectsController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Get project details' })
   findOne(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -72,6 +73,7 @@ export class ProjectsController {
   }
 
   @Patch(':id')
+  @ApiOperation({ summary: 'Update project metadata' })
   update(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -82,6 +84,7 @@ export class ProjectsController {
   }
 
   @Delete(':id')
+  @ApiOperation({ summary: 'Delete a project' })
   remove(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -103,6 +106,7 @@ export class ProjectsController {
   }
 
   @Get(':id/status')
+  @ApiOperation({ summary: 'Get project generation status and progress' })
   getStatus(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -113,6 +117,7 @@ export class ProjectsController {
 
   @Post(':id/cancel')
   @Throttle(THROTTLE_RULES.projectsCancel)
+  @ApiOperation({ summary: 'Cancel active generation pipeline' })
   cancelGeneration(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -122,6 +127,7 @@ export class ProjectsController {
   }
 
   @Get(':id/video')
+  @ApiOperation({ summary: 'Get rendered video metadata and URL' })
   getVideo(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -131,6 +137,7 @@ export class ProjectsController {
   }
 
   @Get(':id/download')
+  @ApiOperation({ summary: 'Get direct download URL for rendered video' })
   getDownloadUrl(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -152,6 +159,7 @@ export class ProjectsController {
   }
 
   @Get(':id/feedback')
+  @ApiOperation({ summary: 'List scene feedback entries for project' })
   getFeedback(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -162,12 +170,14 @@ export class ProjectsController {
 
   @Get('feedback/stats')
   @Throttle(THROTTLE_RULES.projectsFeedbackStats)
+  @ApiOperation({ summary: 'Get aggregated feedback statistics by style' })
   getFeedbackStats(@Query('style') style?: string) {
     return this.projectsService.getFeedbackStats(style);
   }
 
   @Get(':id/prompt-optimization')
   @Throttle(THROTTLE_RULES.projectsPromptOptimization)
+  @ApiOperation({ summary: 'Get prompt optimization from embedding-based feedback' })
   getPromptOptimization(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -179,6 +189,7 @@ export class ProjectsController {
 
   @Post(':id/live-signal')
   @Throttle(THROTTLE_RULES.projectsLiveSignal)
+  @ApiOperation({ summary: 'Send live steering signal for in-flight generation' })
   sendLiveSignal(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -189,6 +200,7 @@ export class ProjectsController {
   }
 
   @Get(':id/live-signal')
+  @ApiOperation({ summary: 'Read current live steering signal' })
   getLiveSignal(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,
@@ -198,6 +210,7 @@ export class ProjectsController {
   }
 
   @Delete(':id/live-signal')
+  @ApiOperation({ summary: 'Clear current live steering signal' })
   clearLiveSignal(
     @Req() req: AuthenticatedRequest,
     @Param('id', ParseUUIDPipe) id: string,

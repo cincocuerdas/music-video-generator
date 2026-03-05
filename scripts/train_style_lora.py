@@ -18,7 +18,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import make_stage_deadline_checker
 from db_utils import get_db_connection
 from env_utils import parse_positive_int_env
 
@@ -29,15 +30,8 @@ dotenv_path = os.path.join(root_dir, '.env')
 load_dotenv(dotenv_path)
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="train_lora")
-
-
-def ensure_stage_deadline(deadline_ts: Optional[float], phase: str) -> None:
-    if deadline_ts is None:
-        return
-    if time.time() > deadline_ts:
-        raise TimeoutError(f"train_lora timeout during {phase}")
+emit_result = make_emit_result("train_lora")
+ensure_stage_deadline = make_stage_deadline_checker("train_lora")
 
 def normalize_style(style: str) -> str:
     style = (style or "").strip().lower()

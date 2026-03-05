@@ -18,12 +18,14 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from result_json import emit_result as shared_emit_result
+from result_json import make_emit_result
+from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
 from env_utils import (
     parse_bool_env,
     parse_csv_env,
     parse_float_env,
     parse_int_env,
+    parse_positive_int_env,
 )
 try:
     from dotenv import load_dotenv
@@ -84,8 +86,23 @@ def get_db_connection():
     return _get_db_connection()
 
 
-def emit_result(payload):
-    return shared_emit_result(payload, default_error_code="image_generation")
+emit_result = make_emit_result("image_generation")
+ensure_stage_deadline = make_stage_deadline_checker("image_generation")
+
+
+def sleep_with_deadline(seconds: float, deadline_ts: float | None, phase: str) -> None:
+    wait_seconds = max(0.0, float(seconds))
+    if wait_seconds == 0:
+        return
+    if deadline_ts is None:
+        time.sleep(wait_seconds)
+        return
+    ensure_stage_deadline(deadline_ts, phase)
+    remaining = max(0.0, deadline_ts - time.time())
+    if remaining <= 0:
+        ensure_stage_deadline(deadline_ts, phase)
+        return
+    time.sleep(min(wait_seconds, remaining))
 
 
 SLO_MITIGATION_REDIS_KEY = "mvg:slo_mitigation"
@@ -137,6 +154,7 @@ def read_slo_mitigation_flag() -> dict:
     if client is None:
         return state
 
+    prompt_id = ""
     try:
         raw = client.get(SLO_MITIGATION_REDIS_KEY)
         if not raw:
@@ -627,7 +645,12 @@ def save_generated_images(project_id: str, images: list):
     finally:
         conn.close()
 
-def generate_with_replicate(prompt: str, style: str = None, api_token: str = None) -> str:
+def generate_with_replicate(
+    prompt: str,
+    style: str = None,
+    api_token: str = None,
+    deadline_ts: float | None = None,
+) -> str:
     """Generate image using Replicate API (FLUX model)"""
     if not api_token:
         raise Exception("REPLICATE_API_TOKEN not provided")
@@ -661,17 +684,33 @@ def generate_with_replicate(prompt: str, style: str = None, api_token: str = Non
     json_data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(create_url, data=json_data, headers=headers, method='POST')
 
-    with urllib.request.urlopen(req) as response:
+    create_timeout = parse_positive_int_env("REPLICATE_CREATE_TIMEOUT_SEC", 30)
+    effective_create_timeout = bounded_timeout_seconds(
+        deadline_ts,
+        create_timeout,
+        phase="replicate_create",
+        scope="image_generation",
+    )
+    with urllib.request.urlopen(req, timeout=effective_create_timeout) as response:
         result = json.loads(response.read().decode('utf-8'))
         prediction_id = result.get('id')
 
     # Poll for completion
     get_url = f"https://api.replicate.com/v1/predictions/{prediction_id}"
-    max_attempts = 60  # Max 2 minutes per image
+    max_attempts = parse_positive_int_env("REPLICATE_POLL_MAX_ATTEMPTS", 60)
+    poll_timeout = parse_positive_int_env("REPLICATE_POLL_TIMEOUT_SEC", 20)
+    poll_interval = max(0.1, parse_float_env("REPLICATE_POLL_INTERVAL_SEC", 2.0))
 
     for attempt in range(max_attempts):
+        ensure_stage_deadline(deadline_ts, f"replicate_poll_attempt:{attempt + 1}")
         req = urllib.request.Request(get_url, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        effective_poll_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            poll_timeout,
+            phase=f"replicate_poll_request:{attempt + 1}",
+            scope="image_generation",
+        )
+        with urllib.request.urlopen(req, timeout=effective_poll_timeout) as response:
             result = json.loads(response.read().decode('utf-8'))
             status = result.get('status')
 
@@ -686,7 +725,11 @@ def generate_with_replicate(prompt: str, style: str = None, api_token: str = Non
                 raise Exception(f"Prediction failed: {error}")
 
             elif status in ['starting', 'processing']:
-                time.sleep(2)
+                sleep_with_deadline(
+                    poll_interval,
+                    deadline_ts,
+                    f"replicate_poll_backoff:{attempt + 1}",
+                )
             else:
                 raise Exception(f"Unknown status: {status}")
 
@@ -700,6 +743,7 @@ def generate_with_gemini_image(
     height: int = 720,
     scene_index: int = 0,
     project_id: str = "",
+    deadline_ts: float | None = None,
 ) -> str:
     """
     Generate image with Gemini image models (Nano Banana family).
@@ -733,7 +777,14 @@ def generate_with_gemini_image(
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=120) as response:
+    gemini_timeout = parse_positive_int_env("GEMINI_IMAGE_TIMEOUT_SEC", 120)
+    effective_gemini_timeout = bounded_timeout_seconds(
+        deadline_ts,
+        gemini_timeout,
+        phase="gemini_generate_image",
+        scope="image_generation",
+    )
+    with urllib.request.urlopen(req, timeout=effective_gemini_timeout) as response:
         data = json.loads(response.read().decode("utf-8"))
 
     inline_data = None
@@ -767,7 +818,14 @@ def generate_with_gemini_image(
 
     return local_path
 
-def generate_with_pollinations(prompt: str, style: str = None, width: int = 1024, height: int = 1024, scene_index: int = 0) -> str:
+def generate_with_pollinations(
+    prompt: str,
+    style: str = None,
+    width: int = 1024,
+    height: int = 1024,
+    scene_index: int = 0,
+    deadline_ts: float | None = None,
+) -> str:
     """
     Generate image using Pollinations.ai (FREE, no API key needed)
     Downloads and caches the image locally to ensure it's ready for video render.
@@ -805,14 +863,23 @@ def generate_with_pollinations(prompt: str, style: str = None, width: int = 1024
     # Download and cache the image (this triggers generation)
     print(f"  Generating image for scene {scene_index} with Pollinations AI...", file=sys.stderr)
 
-    max_retries = 3
+    max_retries = parse_positive_int_env("POLLINATIONS_MAX_RETRIES", 3)
+    request_timeout = parse_positive_int_env("POLLINATIONS_REQUEST_TIMEOUT_SEC", 180)
+    retry_sleep = max(0.1, parse_float_env("POLLINATIONS_RETRY_DELAY_SEC", 5.0))
     for attempt in range(max_retries):
         try:
+            ensure_stage_deadline(deadline_ts, f"pollinations_attempt:{attempt + 1}")
             req = urllib.request.Request(image_url, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
             # Long timeout - Pollinations can take up to 2 minutes to generate
-            with urllib.request.urlopen(req, timeout=180) as response:
+            effective_timeout = bounded_timeout_seconds(
+                deadline_ts,
+                request_timeout,
+                phase=f"pollinations_request:{attempt + 1}",
+                scope="image_generation",
+            )
+            with urllib.request.urlopen(req, timeout=effective_timeout) as response:
                 image_data = response.read()
 
                 # Verify we got actual image data (not an error page)
@@ -829,7 +896,11 @@ def generate_with_pollinations(prompt: str, style: str = None, width: int = 1024
         except Exception as e:
             if attempt < max_retries - 1:
                 print(f"  Retry {attempt + 1}/{max_retries} for scene {scene_index}: {str(e)[:50]}", file=sys.stderr)
-                time.sleep(5)  # Wait before retry
+                sleep_with_deadline(
+                    retry_sleep,
+                    deadline_ts,
+                    f"pollinations_backoff:{attempt + 1}",
+                )
             else:
                 raise Exception(f"Failed to generate image after {max_retries} attempts: {e}")
 
@@ -879,14 +950,21 @@ def generate_with_artic(search_term: str = None, index: int = 0) -> str:
     # Fallback to picsum if artic fails
     return generate_with_picsum(1920, 1080, index)
 
-def check_comfyui_queue_status(comfyui_url: str):
+def check_comfyui_queue_status(comfyui_url: str, deadline_ts: float | None = None):
     """
     Checks if the ComfyUI server is idle or busy.
     Returns: 'idle', 'working', 'pending', or 'down'
     """
     try:
         req = urllib.request.Request(f"{comfyui_url}/queue")
-        with urllib.request.urlopen(req, timeout=5) as response:
+        queue_timeout = parse_positive_int_env("COMFYUI_QUEUE_TIMEOUT_SEC", 5)
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            queue_timeout,
+            phase="comfyui_queue_status",
+            scope="image_generation",
+        )
+        with urllib.request.urlopen(req, timeout=effective_timeout) as response:
             data = json.loads(response.read().decode('utf-8'))
             
             running = data.get('queue_running', [])
@@ -902,7 +980,9 @@ def check_comfyui_queue_status(comfyui_url: str):
         return "down"
 
 
-def interrupt_comfyui_prompt(comfyui_url: str, prompt_id: str = "") -> None:
+def interrupt_comfyui_prompt(
+    comfyui_url: str, prompt_id: str = "", deadline_ts: float | None = None
+) -> None:
     """
     Best-effort interruption for stuck ComfyUI jobs.
     This avoids lingering executions after stall/timeout.
@@ -914,7 +994,14 @@ def interrupt_comfyui_prompt(comfyui_url: str, prompt_id: str = "") -> None:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5):
+        interrupt_timeout = parse_positive_int_env("COMFYUI_INTERRUPT_TIMEOUT_SEC", 5)
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            interrupt_timeout,
+            phase="comfyui_interrupt",
+            scope="image_generation",
+        )
+        with urllib.request.urlopen(req, timeout=effective_timeout):
             pass
     except Exception:
         pass
@@ -930,12 +1017,32 @@ def interrupt_comfyui_prompt(comfyui_url: str, prompt_id: str = "") -> None:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5):
+        queue_timeout = parse_positive_int_env("COMFYUI_QUEUE_TIMEOUT_SEC", 5)
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            queue_timeout,
+            phase="comfyui_queue_delete",
+            scope="image_generation",
+        )
+        with urllib.request.urlopen(req, timeout=effective_timeout):
             pass
     except Exception:
         pass
 
-def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, height: int = 720, scene_index: int = 0, checkpoint: str = None, negative_prompt: str = None, project_id: str = None, verse_type: str = None, has_protagonist: bool = True, ai_optimization: dict = None) -> str:
+def generate_with_comfyui(
+    prompt: str,
+    style: str = None,
+    width: int = 1280,
+    height: int = 720,
+    scene_index: int = 0,
+    checkpoint: str = None,
+    negative_prompt: str = None,
+    project_id: str = None,
+    verse_type: str = None,
+    has_protagonist: bool = True,
+    ai_optimization: dict = None,
+    deadline_ts: float | None = None,
+) -> str:
     """
     Generate image using local ComfyUI server.
     Requires ComfyUI running at COMFYUI_URL.
@@ -1502,7 +1609,14 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
             method='POST'
         )
         
-        with urllib.request.urlopen(req, timeout=10) as response:
+        request_timeout = parse_positive_int_env("COMFYUI_REQUEST_TIMEOUT_SEC", 10)
+        effective_request_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            request_timeout,
+            phase="comfyui_prompt_enqueue",
+            scope="image_generation",
+        )
+        with urllib.request.urlopen(req, timeout=effective_request_timeout) as response:
             result = json.loads(response.read().decode('utf-8'))
             prompt_id = result.get('prompt_id')
         
@@ -1513,6 +1627,9 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
         
         # Poll for completion (scene-level timeout with optional stall cutoff)
         max_wait = max(30, parse_int_env("COMFYUI_SCENE_TIMEOUT_SECONDS", 300))
+        if deadline_ts is not None:
+            remaining = max(1, int(deadline_ts - time.time()))
+            max_wait = min(max_wait, remaining)
         stall_timeout_seconds = max(0, parse_int_env("COMFYUI_STALL_TIMEOUT_SECONDS", 0))
         start_time = time.time()
         last_queue_status = ""
@@ -1520,11 +1637,14 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
         last_status_change_at = start_time
         
         while time.time() - start_time < max_wait:
+            ensure_stage_deadline(deadline_ts, f"comfyui_scene_poll:{scene_index}")
             elapsed = int(time.time() - start_time)
             # Emit periodic polling event so user sees script is alive
             # Emit periodic polling event with server status
             if elapsed % 10 == 0:
-                server_status = check_comfyui_queue_status(comfyui_url)
+                server_status = check_comfyui_queue_status(
+                    comfyui_url, deadline_ts=deadline_ts
+                )
                 if server_status != last_queue_status:
                     last_queue_status = server_status
                     last_status_change_at = time.time()
@@ -1546,7 +1666,14 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
             req = urllib.request.Request(history_url)
 
             try:
-                with urllib.request.urlopen(req, timeout=10) as response:
+                poll_timeout = parse_positive_int_env("COMFYUI_POLL_TIMEOUT_SEC", 10)
+                effective_poll_timeout = bounded_timeout_seconds(
+                    deadline_ts,
+                    poll_timeout,
+                    phase="comfyui_history_poll",
+                    scope="image_generation",
+                )
+                with urllib.request.urlopen(req, timeout=effective_poll_timeout) as response:
                     response_text = response.read().decode('utf-8')
                     if not response_text or response_text == '{}':
                         time.sleep(2)
@@ -1590,7 +1717,18 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
                                         local_path = os.path.join(cache_dir, f"project_{project_id}_scene_{scene_index}.png")
 
                                         img_req = urllib.request.Request(img_url)
-                                        with urllib.request.urlopen(img_req, timeout=30) as img_response:
+                                        image_timeout = parse_positive_int_env(
+                                            "COMFYUI_IMAGE_DOWNLOAD_TIMEOUT_SEC", 30
+                                        )
+                                        effective_image_timeout = bounded_timeout_seconds(
+                                            deadline_ts,
+                                            image_timeout,
+                                            phase="comfyui_image_download",
+                                            scope="image_generation",
+                                        )
+                                        with urllib.request.urlopen(
+                                            img_req, timeout=effective_image_timeout
+                                        ) as img_response:
                                             with open(local_path, 'wb') as f:
                                                 f.write(img_response.read())
 
@@ -1610,20 +1748,24 @@ def generate_with_comfyui(prompt: str, style: str = None, width: int = 1280, hei
                 print(f"  Error polling history: {e}", file=sys.stderr)
 
             if stall_timeout_seconds > 0 and (time.time() - last_status_change_at) >= stall_timeout_seconds:
-                interrupt_comfyui_prompt(comfyui_url, prompt_id)
+                interrupt_comfyui_prompt(comfyui_url, prompt_id, deadline_ts=deadline_ts)
                 raise Exception(
                     f"ComfyUI scene stalled after {stall_timeout_seconds}s without status change"
                 )
 
-            time.sleep(2)
+            sleep_with_deadline(
+                2.0,
+                deadline_ts,
+                f"comfyui_poll_backoff:{scene_index}",
+            )
         
-        interrupt_comfyui_prompt(comfyui_url, prompt_id)
+        interrupt_comfyui_prompt(comfyui_url, prompt_id, deadline_ts=deadline_ts)
         raise Exception(f"ComfyUI generation timed out after {max_wait}s")
 
     except urllib.error.URLError as e:
         raise Exception(f"Cannot connect to ComfyUI at {comfyui_url}. Is it running? Error: {e}")
     except Exception:
-        interrupt_comfyui_prompt(comfyui_url, prompt_id)
+        interrupt_comfyui_prompt(comfyui_url, prompt_id, deadline_ts=deadline_ts)
         raise
 
 def generate_mock_image(prompt: str, index: int) -> str:
@@ -1687,6 +1829,7 @@ def generate_scene_asset(
     project_id: str,
     scene_verse_type: str,
     ai_optimization: dict,
+    stage_deadline: float | None = None,
 ) -> dict:
     """Generate one scene image (thread-safe worker function)."""
     actual_provider = provider
@@ -1700,10 +1843,19 @@ def generate_scene_asset(
 
     try:
         def generate_with_provider(target_provider: str) -> str:
+            ensure_stage_deadline(
+                stage_deadline,
+                f"scene_generate:{scene_index}:{target_provider}",
+            )
             if target_provider == "mock":
                 return generate_mock_image(prompt, scene_index)
             if target_provider == "replicate":
-                return generate_with_replicate(prompt, visual_style, api_token)
+                return generate_with_replicate(
+                    prompt,
+                    visual_style,
+                    api_token,
+                    deadline_ts=stage_deadline,
+                )
             if target_provider == "picsum":
                 return generate_with_picsum(img_width, img_height, seed=scene_index)
             if target_provider == "artic":
@@ -1716,7 +1868,8 @@ def generate_scene_asset(
                     height=img_height,
                     project_id=project_id,
                     verse_type=scene_verse_type,
-                    ai_optimization=ai_optimization
+                    ai_optimization=ai_optimization,
+                    deadline_ts=stage_deadline,
                 )
             if target_provider == "gemini":
                 return call_gemini_serialized(
@@ -1727,6 +1880,7 @@ def generate_scene_asset(
                         height=img_height,
                         scene_index=scene_index,
                         project_id=project_id,
+                        deadline_ts=stage_deadline,
                     )
                 )
             return generate_with_pollinations(
@@ -1734,7 +1888,8 @@ def generate_scene_asset(
                 visual_style,
                 width=img_width,
                 height=img_height,
-                scene_index=scene_index
+                scene_index=scene_index,
+                deadline_ts=stage_deadline,
             )
 
         should_use_gemini, routing_reason = should_route_to_gemini(provider, prompt, scene_verse_type)
@@ -1766,7 +1921,11 @@ def generate_scene_asset(
                         f"Scene {scene_index} waiting (strict cooldown mode).",
                         file=sys.stderr,
                     )
-                    time.sleep(cooldown_remaining)
+                    sleep_with_deadline(
+                        cooldown_remaining,
+                        stage_deadline,
+                        f"gemini_cooldown_wait:{scene_index}",
+                    )
                 elif not strict_gemini_required:
                     # Legacy bypass: non-strict scenes fall back to base provider
                     print(
@@ -1813,7 +1972,11 @@ def generate_scene_asset(
                         f"(scene {scene_index}, attempt {attempt}/{gemini_attempts})",
                         file=sys.stderr,
                     )
-                    time.sleep(cooldown_remaining)
+                    sleep_with_deadline(
+                        cooldown_remaining,
+                        stage_deadline,
+                        f"gemini_attempt_cooldown_wait:{scene_index}:{attempt}",
+                    )
                 try:
                     image_url = generate_with_provider("gemini")
                     break
@@ -1846,7 +2009,11 @@ def generate_scene_asset(
                                 f"(scene {scene_index}, attempt {attempt}/{gemini_attempts})",
                                 file=sys.stderr,
                             )
-                            time.sleep(wait_seconds)
+                            sleep_with_deadline(
+                                wait_seconds,
+                                stage_deadline,
+                                f"gemini_retry_wait:{scene_index}:{attempt}",
+                            )
                         continue
 
             if image_url is None:
@@ -2061,21 +2228,16 @@ def generate_images():
         consecutive_casting_skips = 0
         total_scenes = len(scenes)
         max_workers = resolve_generation_concurrency(provider, total_scenes)
-        stage_timeout_seconds = max(0, parse_int_env("GENERATE_IMAGES_STAGE_TIMEOUT_SEC", 1200))
-        wait_poll_seconds = max(1, parse_int_env("GENERATE_IMAGES_WAIT_POLL_SECONDS", 3))
+        stage_timeout_seconds = max(
+            0, parse_positive_int_env("GENERATE_IMAGES_STAGE_TIMEOUT_SEC", 1200)
+        )
+        wait_poll_seconds = max(
+            1, parse_positive_int_env("GENERATE_IMAGES_WAIT_POLL_SECONDS", 3)
+        )
         stage_started_at = time.time()
         stage_deadline = (
             stage_started_at + stage_timeout_seconds if stage_timeout_seconds > 0 else None
         )
-
-        def ensure_stage_deadline(context: str):
-            if stage_deadline is None:
-                return
-            if time.time() > stage_deadline:
-                elapsed = int(time.time() - stage_started_at)
-                raise TimeoutError(
-                    f"Image generation stage timed out after {elapsed}s ({context}, limit={stage_timeout_seconds}s)"
-                )
         strict_multi_person_mode = parse_bool_env("GEMINI_STRICT_MULTI_PERSON_MODE", True)
         gemini_routing_enabled = parse_bool_env("GEMINI_SMART_ROUTING_ENABLED", True)
         gemini_api_key_present = bool((os.getenv("GEMINI_API_KEY") or "").strip())
@@ -2310,10 +2472,10 @@ def generate_images():
         executor = ThreadPoolExecutor(max_workers=max_workers)
         try:
             while next_scene_to_schedule < total_scenes or pending_futures:
-                ensure_stage_deadline("scheduler_loop")
+                ensure_stage_deadline(stage_deadline, "scheduler_loop")
                 # Fill worker queue
                 while next_scene_to_schedule < total_scenes and len(pending_futures) < max_workers:
-                    ensure_stage_deadline("fill_worker_queue")
+                    ensure_stage_deadline(stage_deadline, "fill_worker_queue")
                     i = next_scene_to_schedule
                     next_scene_to_schedule += 1
 
@@ -2399,19 +2561,25 @@ def generate_images():
                         project_id,
                         scene_verse_type,
                         ai_optimization,
+                        stage_deadline,
                     )
                     pending_futures[future] = scene_task
 
                 if not pending_futures:
                     continue
 
+                effective_wait_timeout = float(wait_poll_seconds)
+                if stage_deadline is not None:
+                    ensure_stage_deadline(stage_deadline, "await_worker_completion")
+                    remaining = max(0.1, stage_deadline - time.time())
+                    effective_wait_timeout = min(effective_wait_timeout, remaining)
                 done, _ = wait(
                     list(pending_futures.keys()),
-                    timeout=wait_poll_seconds,
+                    timeout=effective_wait_timeout,
                     return_when=FIRST_COMPLETED,
                 )
                 if not done:
-                    ensure_stage_deadline("await_worker_completion")
+                    ensure_stage_deadline(stage_deadline, "await_worker_completion")
                     continue
                 for future in done:
                     task = pending_futures.pop(future)

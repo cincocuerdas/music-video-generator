@@ -28,12 +28,14 @@ export class HealthController {
 
   @Get('ops/realtime')
   @Throttle(THROTTLE_RULES.healthOps)
+  @ApiOperation({ summary: 'Realtime events snapshot from websocket metrics cache' })
   async realtime(): Promise<Record<string, unknown>> {
     return this.healthService.getRealtimeEventsSnapshot();
   }
 
   @Get('ops/degraded')
   @Throttle(THROTTLE_RULES.healthOpsDegraded)
+  @ApiOperation({ summary: 'Degraded rate by stage with optional source mode filter' })
   async degraded(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
     @Query('sourceMode') sourceMode?: string,
@@ -43,6 +45,7 @@ export class HealthController {
 
   @Get('ops/pipeline-quality')
   @Throttle(THROTTLE_RULES.healthOpsDegraded)
+  @ApiOperation({ summary: 'Pipeline quality summary (success/degraded/failed mix)' })
   async pipelineQuality(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
     @Query('sourceMode') sourceMode?: string,
@@ -101,4 +104,5 @@ export class HealthController {
   sloMitigation(): Record<string, unknown> {
     return this.healthService.getSloMitigationSnapshot() as unknown as Record<string, unknown>;
   }
+
 }

@@ -6,6 +6,7 @@ import {
     getRefreshToken,
     setAuthTokens,
 } from './authToken';
+import { unwrapData, unwrapError } from './apiEnvelope';
 
 const api = axios.create({
     baseURL: '/api/v1',
@@ -57,9 +58,19 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
+// ─── Envelope normalizer: unwrap { ok, data, meta } or pass-through legacy ───
 api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+        // Unwrap envelope success shape so callers always get the inner data
+        response.data = unwrapData(response.data);
+        return response;
+    },
     async (error) => {
+        // Normalize error body so callers see a consistent shape
+        if (error?.response?.data) {
+            const norm = unwrapError(error.response.data);
+            error.response.data = norm;
+        }
         const originalRequest = error?.config as (Record<string, unknown> & {
             _retry?: boolean;
             _retryWithoutAuth?: boolean;

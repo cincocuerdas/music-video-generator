@@ -50,6 +50,12 @@ async function apiRequest(path, init = {}, timeoutMs = 15_000) {
     if (response.status >= 400) {
       throw new Error(`HTTP ${response.status} ${path}: ${JSON.stringify(data)}`);
     }
+    if (data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, 'ok')) {
+      if (data.ok === true && Object.prototype.hasOwnProperty.call(data, 'data')) {
+        return data.data;
+      }
+      throw new Error(`Envelope error ${path}: ${JSON.stringify(data.error || data)}`);
+    }
     return data;
   } finally {
     clearTimeout(timer);

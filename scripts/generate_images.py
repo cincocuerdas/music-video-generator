@@ -392,6 +392,129 @@ def scene_likely_has_people(prompt: str, verse_type: str = None) -> bool:
     return any(keyword in text for keyword in people_keywords)
 
 
+def normalize_routing_tokens(routing_reason: str) -> set[str]:
+    return {
+        token.strip()
+        for token in str(routing_reason or "").split(",")
+        if token and token.strip()
+    }
+
+
+def compute_scene_quality_score(
+    *,
+    prompt: str,
+    verse_type: str,
+    provider: str,
+    routing_reason: str,
+    is_fallback: bool,
+    generation_error: Exception | None,
+    exposed: bool | None = None,
+    exposure_quality_score: float | None = None,
+) -> tuple[float, list[str]]:
+    traits = detect_scene_traits(prompt, verse_type)
+    routing_tokens = normalize_routing_tokens(routing_reason)
+    reasons: list[str] = []
+    score = 0.82
+
+    if is_fallback or generation_error is not None:
+        score -= 0.68
+        reasons.append("fallback_output")
+
+    if provider == "mock":
+        score -= 0.22
+        reasons.append("provider_mock")
+
+    strict_scene = bool(routing_tokens & {"text", "crowd", "action", "multi_person"})
+    if strict_scene and provider != "gemini":
+        score -= 0.14
+        reasons.append("strict_scene_without_gemini")
+    if strict_scene and provider == "gemini":
+        score += 0.05
+
+    if traits.get("crowd") and provider in {"pollinations", "picsum", "artic"}:
+        score -= 0.1
+        reasons.append("crowd_scene_non_specialized_provider")
+    if traits.get("textHeavy") and provider in {"pollinations", "picsum", "artic"}:
+        score -= 0.1
+        reasons.append("text_scene_non_specialized_provider")
+    if traits.get("action") and provider in {"pollinations", "picsum", "artic"}:
+        score -= 0.08
+        reasons.append("action_scene_non_specialized_provider")
+
+    if exposed is False:
+        score -= 0.08
+        reasons.append("frame_not_exposed")
+
+    if exposure_quality_score is not None:
+        try:
+            normalized_exposure = max(0.0, min(float(exposure_quality_score) / 7.0, 1.0))
+            score = (score * 0.7) + (normalized_exposure * 0.3)
+            if normalized_exposure < 0.45:
+                reasons.append("low_exposure_quality")
+        except Exception:
+            pass
+
+    score = max(0.0, min(1.0, score))
+    if score >= 0.75:
+        reasons.append("quality_good")
+    elif score < 0.55:
+        reasons.append("quality_low")
+
+    deduped_reasons: list[str] = []
+    for reason in reasons:
+        if reason not in deduped_reasons:
+            deduped_reasons.append(reason)
+    return score, deduped_reasons
+
+
+def consume_quality_retry_budget(state: dict | None) -> bool:
+    if not state:
+        return True
+    lock = state.get("lock")
+    if lock is None:
+        return True
+    with lock:
+        remaining = int(state.get("remaining", 0))
+        if remaining <= 0:
+            return False
+        state["remaining"] = remaining - 1
+        state["used"] = int(state.get("used", 0)) + 1
+        return True
+
+
+def maybe_select_quality_retry_provider(
+    current_provider: str,
+    base_provider: str,
+    routing_reason: str,
+    mitigation_early_failover: bool,
+) -> tuple[str | None, str]:
+    routing_tokens = normalize_routing_tokens(routing_reason)
+    strict_scene = bool(routing_tokens & {"text", "crowd", "action", "multi_person"})
+    gemini_available = bool((os.getenv("GEMINI_API_KEY") or "").strip())
+    allow_gemini_retry = parse_bool_env("SCENE_QUALITY_RETRY_ALLOW_GEMINI", True)
+
+    if (
+        strict_scene
+        and current_provider != "gemini"
+        and gemini_available
+        and allow_gemini_retry
+        and not mitigation_early_failover
+    ):
+        return "gemini", "strict_scene_upgrade_to_gemini"
+
+    if current_provider == "gemini":
+        fallback_provider = base_provider if base_provider != "gemini" else "pollinations"
+        if mitigation_early_failover and fallback_provider == "gemini":
+            fallback_provider = "pollinations"
+        if fallback_provider != "gemini":
+            return fallback_provider, "gemini_retry_fallback"
+
+    if current_provider == "pollinations" and base_provider == "comfyui":
+        return "comfyui", "pollinations_to_comfyui"
+
+    return None, ""
+
+
 def should_route_to_gemini(base_provider: str, prompt: str, verse_type: str = None) -> tuple[bool, str]:
     if base_provider not in {"comfyui", "pollinations", "replicate"}:
         return False, ""
@@ -424,6 +547,19 @@ COMFYUI_WORKFLOW_TEMPLATE_PATH = os.path.join(
 )
 _STYLE_LORA_CACHE = {}
 _WORKFLOW_TEMPLATE_CACHE = None
+_GENERATION_META_LOCAL = threading.local()
+
+
+def set_last_generation_metadata(provider: str, model_name: str) -> None:
+    _GENERATION_META_LOCAL.provider = provider
+    _GENERATION_META_LOCAL.model_name = model_name
+
+
+def get_last_generation_metadata() -> dict:
+    return {
+        "provider": getattr(_GENERATION_META_LOCAL, "provider", None),
+        "modelName": getattr(_GENERATION_META_LOCAL, "model_name", None),
+    }
 
 # Node IDs that generate_with_comfyui() writes to unconditionally.
 # If any is missing from the template, the pipeline will crash at image time.
@@ -654,6 +790,7 @@ def generate_with_replicate(
     """Generate image using Replicate API (FLUX model)"""
     if not api_token:
         raise Exception("REPLICATE_API_TOKEN not provided")
+    set_last_generation_metadata("replicate", "black-forest-labs/flux-schnell")
 
     # FLUX Schnell model - fast and high quality
     model_version = "black-forest-labs/flux-schnell"
@@ -754,6 +891,7 @@ def generate_with_gemini_image(
         raise Exception("GEMINI_API_KEY not provided")
 
     model = (os.getenv("GEMINI_IMAGE_MODEL") or "gemini-3-pro-image-preview").strip()
+    set_last_generation_metadata("gemini", model)
     base_url = get_gemini_api_base_url()
 
     style_hint = f"{style} style" if style else "cinematic style"
@@ -844,6 +982,7 @@ def generate_with_pollinations(
 
     # Pollinations.ai direct URL - generates image on access
     # Using flux model for better quality
+    set_last_generation_metadata("pollinations", "pollinations/flux")
     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={width}&height={height}&model=flux&nologo=true"
 
     # Create local cache directory
@@ -908,6 +1047,7 @@ def generate_with_pollinations(
 
 def generate_with_picsum(width: int = 1920, height: int = 1080, seed: int = None) -> str:
     """Get a random photo from Picsum (Lorem Picsum) - FREE"""
+    set_last_generation_metadata("picsum", "picsum/random")
     # Picsum provides beautiful random photos
     if seed is not None:
         return f"https://picsum.photos/seed/{seed}/{width}/{height}"
@@ -915,6 +1055,7 @@ def generate_with_picsum(width: int = 1920, height: int = 1080, seed: int = None
 
 def generate_with_artic(search_term: str = None, index: int = 0) -> str:
     """Get artwork from Art Institute of Chicago API - FREE"""
+    set_last_generation_metadata("artic", "artic-api")
     try:
         # Search for artwork related to the prompt keywords
         search_url = "https://api.artic.edu/api/v1/artworks/search"
@@ -1189,6 +1330,7 @@ def generate_with_comfyui(
         steps = 30
         cfg = 7.0
         sampler = "dpmpp_2m"
+    set_last_generation_metadata("comfyui", model_checkpoint)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # SAFETY CLAMP: Lightning/Turbo models burn at high CFG
@@ -1771,6 +1913,7 @@ def generate_with_comfyui(
 def generate_mock_image(prompt: str, index: int) -> str:
     """Generate a mock placeholder image URL for testing"""
     _ = prompt  # prompt kept for signature compatibility
+    set_last_generation_metadata("mock", "placeholder")
     return build_placeholder_image_url(f"Scene {index + 1}")
 
 def build_fallback_image_data(scene_index: int, prompt: str, reason: str = "") -> dict:
@@ -1830,6 +1973,11 @@ def generate_scene_asset(
     scene_verse_type: str,
     ai_optimization: dict,
     stage_deadline: float | None = None,
+    quality_retry_state: dict | None = None,
+    quality_retry_attempt: int = 1,
+    quality_retry_max_attempts: int | None = None,
+    quality_retry_base_provider: str | None = None,
+    quality_retry_reason: str | None = None,
 ) -> dict:
     """Generate one scene image (thread-safe worker function)."""
     actual_provider = provider
@@ -1840,6 +1988,13 @@ def generate_scene_asset(
     mitigation_early_failover = bool(
         slo_mitigation.get("active") and slo_mitigation.get("earlyFailover")
     )
+    base_provider_for_retry = quality_retry_base_provider or provider
+    max_quality_attempts = (
+        quality_retry_max_attempts
+        if isinstance(quality_retry_max_attempts, int) and quality_retry_max_attempts > 0
+        else max(1, parse_int_env("SCENE_QUALITY_MAX_ATTEMPTS_PER_SCENE", 2))
+    )
+    quality_min_score = min(1.0, max(0.0, parse_float_env("SCENE_QUALITY_MIN_SCORE", 0.55)))
 
     try:
         def generate_with_provider(target_provider: str) -> str:
@@ -2089,13 +2244,92 @@ def generate_scene_asset(
             web_image_url = build_fallback_image_data(scene_index, prompt, str(scene_err))["imageUrl"]
             actual_provider = "mock"
 
+    scene_is_fallback = scene_generation_error is not None or actual_provider == "mock"
+    scene_quality_score, scene_quality_reasons = compute_scene_quality_score(
+        prompt=prompt,
+        verse_type=scene_verse_type,
+        provider=actual_provider,
+        routing_reason=routing_reason,
+        is_fallback=scene_is_fallback,
+        generation_error=scene_generation_error,
+    )
+    metadata = get_last_generation_metadata()
+    model_name = metadata.get("modelName")
+    attempt_entry = {
+        "attempt": quality_retry_attempt,
+        "provider": actual_provider,
+        "model": model_name or f"{actual_provider}:unknown",
+        "reason": quality_retry_reason or ("initial" if quality_retry_attempt == 1 else "quality_retry"),
+        "qualityScore": round(scene_quality_score, 4),
+        "qualityReasons": scene_quality_reasons,
+        "error": str(scene_generation_error)[:300] if scene_generation_error else None,
+    }
+    generation_trace = [attempt_entry]
+
+    retry_enabled = parse_bool_env("SCENE_QUALITY_RETRY_ENABLED", True)
+    if (
+        retry_enabled
+        and quality_retry_attempt < max_quality_attempts
+        and scene_quality_score < quality_min_score
+    ):
+        retry_provider, retry_reason = maybe_select_quality_retry_provider(
+            current_provider=actual_provider,
+            base_provider=base_provider_for_retry,
+            routing_reason=routing_reason,
+            mitigation_early_failover=mitigation_early_failover,
+        )
+        if retry_provider and retry_provider != actual_provider and consume_quality_retry_budget(quality_retry_state):
+            print(
+                f"  🔁 Scene {scene_index}: quality retry {quality_retry_attempt}/{max_quality_attempts} "
+                f"{actual_provider}->{retry_provider} (score={scene_quality_score:.2f}, "
+                f"threshold={quality_min_score:.2f}, reason={retry_reason})",
+                file=sys.stderr,
+            )
+            retried = generate_scene_asset(
+                provider=retry_provider,
+                prompt=prompt,
+                visual_style=visual_style,
+                api_token=api_token,
+                img_width=img_width,
+                img_height=img_height,
+                scene_index=scene_index,
+                project_id=project_id,
+                scene_verse_type=scene_verse_type,
+                ai_optimization=ai_optimization,
+                stage_deadline=stage_deadline,
+                quality_retry_state=quality_retry_state,
+                quality_retry_attempt=quality_retry_attempt + 1,
+                quality_retry_max_attempts=max_quality_attempts,
+                quality_retry_base_provider=base_provider_for_retry,
+                quality_retry_reason=retry_reason,
+            )
+            retried_trace = list(retried.get("generationTrace") or [])
+            combined_trace = generation_trace + retried_trace
+            retried_score = float(retried.get("sceneQualityScore", 0.0) or 0.0)
+            if retried_score >= scene_quality_score:
+                retried["generationTrace"] = combined_trace
+                retried["qualityRetryCount"] = max(0, len(combined_trace) - 1)
+                retried["qualityRetryAttempt"] = len(combined_trace)
+                retried["qualityRetryThreshold"] = quality_min_score
+                return retried
+            # Keep better initial render but preserve traceability of failed retry branch.
+            generation_trace = combined_trace
+            scene_quality_reasons = list(dict.fromkeys(scene_quality_reasons + ["quality_retry_kept_initial"]))
+
     return {
         "sceneIndex": scene_index,
         "prompt": prompt,
         "webImageUrl": web_image_url,
         "usedProvider": actual_provider,
-        "routingReason": routing_reason if actual_provider == "gemini" else None,
+        "modelName": model_name or f"{actual_provider}:unknown",
+        "routingReason": routing_reason if actual_provider == "gemini" else routing_reason,
         "sceneGenerationError": scene_generation_error,
+        "sceneQualityScore": round(scene_quality_score, 4),
+        "sceneQualityReasons": scene_quality_reasons,
+        "qualityRetryCount": max(0, len(generation_trace) - 1),
+        "qualityRetryAttempt": quality_retry_attempt,
+        "qualityRetryThreshold": quality_min_score,
+        "generationTrace": generation_trace,
     }
 
 def generate_images():
@@ -2107,8 +2341,10 @@ def generate_images():
             useful_output = True
             fallback = {
                 "status": compute_status(degraded, useful_output),
+                "success": useful_output,
                 "mode": "mock",
                 "degraded": degraded,
+                "degradedReasons": ["image_generation.missing_project_id"],
                 "message": "Project ID missing. Generated safe fallback output.",
                 "totalScenes": 1,
                 "generatedCount": 1,
@@ -2228,6 +2464,21 @@ def generate_images():
         consecutive_casting_skips = 0
         total_scenes = len(scenes)
         max_workers = resolve_generation_concurrency(provider, total_scenes)
+        quality_retry_enabled = parse_bool_env("SCENE_QUALITY_RETRY_ENABLED", True)
+        quality_retry_max_attempts = max(
+            1,
+            parse_int_env("SCENE_QUALITY_MAX_ATTEMPTS_PER_SCENE", 2),
+        )
+        default_retry_budget = max(0, min(12, total_scenes // 2))
+        quality_retry_budget = max(
+            0,
+            parse_int_env("SCENE_QUALITY_MAX_RETRIES_PER_PIPELINE", default_retry_budget),
+        )
+        quality_retry_state = {
+            "lock": threading.Lock(),
+            "remaining": quality_retry_budget,
+            "used": 0,
+        }
         stage_timeout_seconds = max(
             0, parse_positive_int_env("GENERATE_IMAGES_STAGE_TIMEOUT_SEC", 1200)
         )
@@ -2286,6 +2537,12 @@ def generate_images():
             f"Parallel generation enabled: workers={max_workers}, provider={provider}, scenes={total_scenes}",
             file=sys.stderr
         )
+        if quality_retry_enabled and quality_retry_max_attempts > 1:
+            print(
+                f"Quality retry enabled: maxAttemptsPerScene={quality_retry_max_attempts}, "
+                f"pipelineRetryBudget={quality_retry_budget}",
+                file=sys.stderr,
+            )
 
         # Emit initial progress event IMMEDIATELY so user sees something
         initial_event = {
@@ -2321,6 +2578,11 @@ def generate_images():
             routing_reason = scene_payload.get("routingReason")
             steering_applied = scene_payload["steeringApplied"]
             steering_message = scene_payload["steeringMessage"]
+            model_name = scene_payload.get("modelName")
+            generation_trace = list(scene_payload.get("generationTrace") or [])
+            quality_retry_count = int(scene_payload.get("qualityRetryCount") or 0)
+            pre_quality_score = scene_payload.get("sceneQualityScore")
+            pre_quality_reasons = list(scene_payload.get("sceneQualityReasons") or [])
 
             # ═══════════════════════════════════════════════════════════════════════
             # FRAME EXPOSURE DECISION - CASTING MODE + CONTINUITY GUARD
@@ -2328,6 +2590,7 @@ def generate_images():
             should_expose = True
             exposure_reason = "No quality check"
             set_as_anchor = False
+            exposure_quality_score = None
 
             if EXPOSER_AVAILABLE and used_provider == "comfyui":
                 verse_type = scene.get("verseType", "NARRATIVE")
@@ -2348,6 +2611,7 @@ def generate_images():
                     .get("quality", {})
                     .get("score", 0)
                 )
+                exposure_quality_score = quality_score
 
                 # Relax CASTING when too many initial frames are rejected.
                 # This avoids long frozen intros caused by an overly strict anchor gate.
@@ -2385,18 +2649,38 @@ def generate_images():
                 else:
                     consecutive_casting_skips = 0
 
+            final_quality_score, final_quality_reasons = compute_scene_quality_score(
+                prompt=prompt,
+                verse_type=scene.get("verseType", "NARRATIVE"),
+                provider=used_provider,
+                routing_reason=routing_reason or "",
+                is_fallback=scene_generation_error is not None,
+                generation_error=scene_generation_error,
+                exposed=should_expose,
+                exposure_quality_score=exposure_quality_score,
+            )
+            if isinstance(pre_quality_score, (int, float)):
+                final_quality_score = (float(pre_quality_score) * 0.5) + (final_quality_score * 0.5)
+            final_quality_score = max(0.0, min(1.0, final_quality_score))
+            merged_quality_reasons = list(dict.fromkeys(pre_quality_reasons + final_quality_reasons))
+
             image_data = {
                 "sceneIndex": i,
                 "prompt": prompt[:200],
                 "imageUrl": web_image_url,
                 "status": "success",
                 "provider": used_provider,
+                "modelName": model_name or f"{used_provider}:unknown",
                 "exposed": should_expose,
                 "exposureReason": exposure_reason,
                 "steeringApplied": steering_applied,
                 "steeringMessage": steering_message if steering_applied else None,
                 "routingReason": routing_reason,
-                "isFallback": scene_generation_error is not None
+                "isFallback": scene_generation_error is not None,
+                "sceneQualityScore": round(final_quality_score, 4),
+                "sceneQualityReasons": merged_quality_reasons,
+                "qualityRetryCount": quality_retry_count,
+                "generationTrace": generation_trace,
             }
             generated_images.append(image_data)
 
@@ -2562,6 +2846,11 @@ def generate_images():
                         scene_verse_type,
                         ai_optimization,
                         stage_deadline,
+                        quality_retry_state,
+                        1,
+                        quality_retry_max_attempts,
+                        provider,
+                        None,
                     )
                     pending_futures[future] = scene_task
 
@@ -2592,7 +2881,22 @@ def generate_images():
                             "prompt": task["prompt"],
                             "webImageUrl": build_fallback_image_data(i, task["prompt"], str(worker_err))["imageUrl"],
                             "usedProvider": "mock",
+                            "modelName": "mock:placeholder",
                             "sceneGenerationError": worker_err,
+                            "sceneQualityScore": 0.0,
+                            "sceneQualityReasons": ["worker_exception", "quality_low"],
+                            "qualityRetryCount": 0,
+                            "generationTrace": [
+                                {
+                                    "attempt": 1,
+                                    "provider": "mock",
+                                    "model": "mock:placeholder",
+                                    "reason": "worker_exception",
+                                    "qualityScore": 0.0,
+                                    "qualityReasons": ["worker_exception", "quality_low"],
+                                    "error": str(worker_err)[:300],
+                                }
+                            ],
                         }
                     completed_scene_payloads[i] = {
                         **task,
@@ -2637,6 +2941,49 @@ def generate_images():
         unexposed_count = len([img for img in generated_images if img.get("exposed") is False])
         fallback_count = len([img for img in generated_images if img.get("isFallback") is True])
         fallback_ratio = (fallback_count / total_scenes) if total_scenes > 0 else 0.0
+        quality_scores = [
+            float(img.get("sceneQualityScore"))
+            for img in generated_images
+            if isinstance(img.get("sceneQualityScore"), (int, float))
+        ]
+        average_quality_score = (
+            round(sum(quality_scores) / len(quality_scores), 4) if quality_scores else 0.0
+        )
+        low_quality_threshold = min(1.0, max(0.0, parse_float_env("SCENE_QUALITY_MIN_SCORE", 0.55)))
+        low_quality_count = len(
+            [
+                img
+                for img in generated_images
+                if isinstance(img.get("sceneQualityScore"), (int, float))
+                and float(img.get("sceneQualityScore")) < low_quality_threshold
+            ]
+        )
+        quality_retry_count = int(
+            sum(
+                int(img.get("qualityRetryCount", 0) or 0)
+                for img in generated_images
+            )
+        )
+        traceability_summary = {
+            "providers": sorted(
+                list(
+                    {
+                        str(img.get("provider")).strip()
+                        for img in generated_images
+                        if str(img.get("provider") or "").strip()
+                    }
+                )
+            ),
+            "models": sorted(
+                list(
+                    {
+                        str(img.get("modelName")).strip()
+                        for img in generated_images
+                        if str(img.get("modelName") or "").strip()
+                    }
+                )
+            ),
+        }
 
         min_real_success = max(0, parse_int_env("IMAGE_GENERATION_MIN_REAL_SUCCESS", 0))
         max_fallback_ratio = min(
@@ -2652,9 +2999,15 @@ def generate_images():
             quality_reasons.append(
                 f"image_generation.fallback_ratio_too_high:{fallback_ratio:.2f}>{max_fallback_ratio:.2f}"
             )
+        if quality_scores and average_quality_score < low_quality_threshold:
+            quality_reasons.append(
+                f"image_generation.avg_quality_too_low:{average_quality_score:.2f}<{low_quality_threshold:.2f}"
+            )
 
         degraded = any(img.get("isFallback") for img in generated_images) or bool(db_save_warning)
-        useful_output = len(quality_reasons) == 0 and generated_count > 0
+        # If we produced any image output, keep pipeline alive as degraded instead of failed.
+        # quality_reasons are preserved for observability and downstream tuning decisions.
+        useful_output = generated_count > 0
         exposure_metrics = {
             "totalScenes": total_scenes,
             "generatedCount": generated_count,
@@ -2665,6 +3018,14 @@ def generate_images():
             "fallbackCount": fallback_count,
             "fallbackRatio": round(fallback_ratio, 4),
             "exposureRate": (round((exposed_count / total_scenes), 4) if total_scenes > 0 else 0.0),
+            "averageQualityScore": average_quality_score,
+            "lowQualityCount": low_quality_count,
+            "qualityThreshold": low_quality_threshold,
+            "qualityRetryCount": quality_retry_count,
+            "qualityRetryBudgetConfigured": quality_retry_budget,
+            "qualityRetryBudgetUsed": int(quality_retry_state.get("used", 0)),
+            "qualityRetryBudgetRemaining": int(quality_retry_state.get("remaining", 0)),
+            "traceability": traceability_summary,
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         result = {
@@ -2677,8 +3038,12 @@ def generate_images():
             "images": generated_images,
             "mode": provider,
             "degraded": degraded,
-            "degradedReasons": quality_reasons if quality_reasons else None,
+            "degradedReasons": quality_reasons,
             "dbSaveWarning": db_save_warning,
+            "averageQualityScore": average_quality_score,
+            "lowQualityCount": low_quality_count,
+            "qualityRetryCount": quality_retry_count,
+            "traceability": traceability_summary,
             "exposureMetrics": exposure_metrics,
         }
 
@@ -2688,7 +3053,7 @@ def generate_images():
     except TimeoutError as e:
         print(f"Warning: {e}", file=sys.stderr)
         degraded = True
-        useful_output = False
+        useful_output = True
         timeout_images = (
             generated_images
             if "generated_images" in locals() and generated_images
@@ -2710,20 +3075,23 @@ def generate_images():
             "degradedReasons": ["image_generation.stage_timeout"],
             "message": "Image generation timed out; returning degraded fallback output.",
             "error": str(e),
+            "errorCode": "IMAGE_GENERATION_STAGE_TIMEOUT",
         }
         emit_result(result)
         return result
     except urllib.error.HTTPError as e:
         error_msg = e.read().decode('utf-8', errors='replace')
         degraded = True
-        useful_output = False
+        useful_output = True
         fallback = {
             "status": compute_status(degraded, useful_output),
             "success": useful_output,
             "mode": "mock",
             "degraded": degraded,
+            "degradedReasons": [f"image_generation.http_error:{e.code}"],
             "message": "HTTP error in generation pipeline; returning fallback output.",
             "error": f"HTTP {e.code}",
+            "errorCode": f"IMAGE_GENERATION_HTTP_{int(e.code)}",
             "details": error_msg[:800],
             "totalScenes": 1,
             "generatedCount": 1,
@@ -2734,14 +3102,16 @@ def generate_images():
         return fallback
     except Exception as e:
         degraded = True
-        useful_output = False
+        useful_output = True
         fallback = {
             "status": compute_status(degraded, useful_output),
             "success": useful_output,
             "mode": "mock",
             "degraded": degraded,
+            "degradedReasons": [f"image_generation.unhandled_exception:{type(e).__name__}"],
             "message": "Unhandled error in generation pipeline; returning fallback output.",
             "error": str(e),
+            "errorCode": "IMAGE_GENERATION_UNHANDLED_EXCEPTION",
             "type": type(e).__name__,
             "totalScenes": 1,
             "generatedCount": 1,

@@ -8,6 +8,7 @@ import {
   extractDegradedReasonsFromOutputData,
 } from '../pipeline-quality.utils';
 import { ProjectPipelineQualityService } from './project-pipeline-quality.service';
+import { toStructuredLog } from '../../../common/utils/structured-log.util';
 
 @Injectable()
 export class JobStateService {
@@ -30,7 +31,12 @@ export class JobStateService {
   }
 
   async markAsProcessing(id: string, workerId: string): Promise<Job> {
-    this.logger.log(`Marking job ${id} as PROCESSING by worker ${workerId}`);
+    this.logger.log(
+      toStructuredLog('job.processing', {
+        jobId: id,
+        workerId,
+      }),
+    );
     return this.update(id, {
       status: JobStatus.PROCESSING,
       workerId,
@@ -38,7 +44,11 @@ export class JobStateService {
   }
 
   async markAsCompleted(id: string, outputData: unknown): Promise<Job> {
-    this.logger.log(`Marking job ${id} as COMPLETED`);
+    this.logger.log(
+      toStructuredLog('job.completed', {
+        jobId: id,
+      }),
+    );
     const completedJob = await this.update(id, {
       status: JobStatus.COMPLETED,
       progress: 100,
@@ -67,7 +77,12 @@ export class JobStateService {
   }
 
   async markAsFailed(id: string, error: string): Promise<Job> {
-    this.logger.error(`Marking job ${id} as FAILED: ${error}`);
+    this.logger.error(
+      toStructuredLog('job.failed', {
+        jobId: id,
+        error,
+      }),
+    );
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.job.update({
         where: { id },

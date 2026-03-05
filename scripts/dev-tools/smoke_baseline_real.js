@@ -123,6 +123,17 @@ function sleep(ms) {
 }
 
 /**
+ * Unwrap envelope response: { ok, data, meta } → inner data.
+ * If the response is legacy (no envelope), return as-is.
+ */
+function unwrap(body) {
+  if (body && typeof body === 'object' && 'ok' in body && 'data' in body && 'meta' in body) {
+    return body.data;
+  }
+  return body;
+}
+
+/**
  * request() with automatic retry on ECONNREFUSED / ECONNRESET.
  * Useful when the backend briefly restarts mid-pipeline.
  */
@@ -170,13 +181,14 @@ async function runPipeline(youtubeUrl, runIndex, totalRuns, token) {
       { title: `Smoke Baseline ${new Date().toISOString()}`, youtubeUrl, visualStyle: 'cinematic' },
       token,
     );
-    if (!project.data?.id) {
+    const projectBody = unwrap(project.data);
+    if (!projectBody?.id) {
       console.error(`${label}  ? Project creation failed:`, JSON.stringify(project.data));
       metrics.finalStatus = 'failed';
       metrics.errors.push(`Project creation failed: ${JSON.stringify(project.data)}`);
       return metrics;
     }
-    const projectId = project.data.id;
+    const projectId = projectBody.id;
     console.log(`${label}  ? Project ${projectId}`);
 
     // Start pipeline
@@ -198,12 +210,13 @@ async function runPipeline(youtubeUrl, runIndex, totalRuns, token) {
 
     while (Date.now() - pipelineStart < MAX_WAIT_MS) {
       const poll = await requestWithRetry('GET', `${API}/jobs/pipeline/${projectId}`, null, token, 5, 5000);
-      const pipelineStatus = poll.data?.pipelineStatus || poll.data?.status || 'unknown';
+      const pollBody = unwrap(poll.data);
+      const pipelineStatus = pollBody?.pipelineStatus || pollBody?.status || 'unknown';
       // Derive current stage from currentJob or the active job in the jobs array
-      const activeJob = poll.data?.currentJob || (poll.data?.jobs || []).find((j) => j.status === 'PROCESSING');
-      const currentStage = activeJob?.type || poll.data?.currentStage || poll.data?.currentStep || '';
-      const progress = poll.data?.overallProgress ?? poll.data?.progress ?? '?';
-      const isDegraded = !!poll.data?.degraded;
+      const activeJob = pollBody?.currentJob || (pollBody?.jobs || []).find((j) => j.status === 'PROCESSING');
+      const currentStage = activeJob?.type || pollBody?.currentStage || pollBody?.currentStep || '';
+      const progress = pollBody?.overallProgress ?? pollBody?.progress ?? '?';
+      const isDegraded = !!pollBody?.degraded;
 
       if (currentStage && currentStage !== lastStage) {
         const now = Date.now();
@@ -231,7 +244,7 @@ async function runPipeline(youtubeUrl, runIndex, totalRuns, token) {
         metrics.finalStatus = 'completed';
         metrics.degraded = isDegraded;
         if (isDegraded) {
-          metrics.degradedReasons = poll.data?.degradedReasons || [];
+          metrics.degradedReasons = pollBody?.degradedReasons || [];
         }
         const degradedTag = isDegraded ? ' (degraded)' : '';
         console.log(`${label}\n  ? Pipeline completed${degradedTag} in ${Math.round(totalMs / 1000)}s`);
@@ -242,7 +255,7 @@ async function runPipeline(youtubeUrl, runIndex, totalRuns, token) {
         const totalMs = Date.now() - pipelineStart;
         metrics.totalDurationMs = totalMs;
         metrics.finalStatus = 'failed';
-        metrics.errors.push(poll.data?.error || poll.data?.message || 'Unknown failure');
+        metrics.errors.push(pollBody?.error || pollBody?.message || 'Unknown failure');
         console.error(`${label}\n  ? Pipeline failed after ${Math.round(totalMs / 1000)}s`);
         console.error(`${label}    Error: ${metrics.errors[0]}`);
         break;
@@ -293,11 +306,12 @@ async function main() {
   const auth = await request('POST', `${API}/auth/login/dev`, {
     userId: '00000000-0000-4000-8000-000000000001',
   });
-  if (!auth.data?.accessToken) {
-    console.error('  ✗ Failed to obtain token:', JSON.stringify(auth.data));
+  const authBody = unwrap(auth.data);
+  if (!authBody?.accessToken) {
+    console.error('  \u2717 Failed to obtain token:', JSON.stringify(auth.data));
     process.exit(1);
   }
-  const token = auth.data.accessToken;
+  const token = authBody.accessToken;
   console.log('  ✓ Token acquired\n');
 
   // 3. Run pipelines sequentially

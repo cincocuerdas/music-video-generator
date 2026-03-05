@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma';
 import { JobsService } from '../jobs/jobs.service';
 import { isValidYoutubeUrl } from '../../common/constants';
+import { toStructuredLog } from '../../common/utils/structured-log.util';
 import {
   CreateProjectDto,
   UpdateProjectDto,
@@ -72,10 +73,22 @@ export class ProjectsService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async create(userId: string, createProjectDto: CreateProjectDto) {
-    this.logger.log(`Attempting to create project for user ${userId}: ${JSON.stringify(createProjectDto)}`);
+    this.logger.log(
+      toStructuredLog('projects.create.requested', {
+        userId,
+        hasYoutubeUrl: Boolean(createProjectDto.youtubeUrl),
+        hasLyrics: Boolean(createProjectDto.lyrics),
+        visualStyle: createProjectDto.visualStyle ?? null,
+      }),
+    );
 
     if (createProjectDto.youtubeUrl && !isValidYoutubeUrl(createProjectDto.youtubeUrl)) {
-      this.logger.warn(`Rejected invalid YouTube URL: ${createProjectDto.youtubeUrl}`);
+      this.logger.warn(
+        toStructuredLog('projects.create.invalid_youtube_url', {
+          userId,
+          youtubeUrl: createProjectDto.youtubeUrl,
+        }),
+      );
       throw new BadRequestException('Invalid YouTube URL');
     }
 
@@ -190,7 +203,13 @@ export class ProjectsService {
 
   async startGeneration(id: string, userId: string, dto: StartGenerationDto) {
     if (dto.youtubeUrl && !isValidYoutubeUrl(dto.youtubeUrl)) {
-      this.logger.warn(`Rejected invalid YouTube URL: ${dto.youtubeUrl}`);
+      this.logger.warn(
+        toStructuredLog('projects.start_generation.invalid_youtube_url', {
+          projectId: id,
+          userId,
+          youtubeUrl: dto.youtubeUrl,
+        }),
+      );
       throw new BadRequestException('Invalid YouTube URL');
     }
 

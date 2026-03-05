@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'child_process';
 import * as path from 'path';
+import { toStructuredLog } from '../utils/structured-log.util';
 
 export interface ProgressEvent {
   type: 'image_generated' | 'job_update' | 'progress';
@@ -81,7 +82,15 @@ export class PythonRunnerService {
       const scriptPath = path.join(process.cwd(), 'scripts', scriptName);
       const timeoutMs = this.resolveScriptTimeoutMs(scriptName);
 
-      this.logger.log(`Ejecutando Python: ${this.pythonPath} ${scriptPath} ${args.join(' ')}`);
+      this.logger.log(
+        toStructuredLog('python.run.start', {
+          scriptName,
+          scriptPath,
+          args,
+          timeoutMs,
+          pythonPath: this.pythonPath,
+        }),
+      );
 
       const pythonProcess = spawn(this.pythonPath, [scriptPath, ...args]);
       let settled = false;
@@ -98,7 +107,10 @@ export class PythonRunnerService {
         }
         settled = true;
         this.logger.error(
-          `Python script timed out after ${timeoutMs}ms: ${scriptName}`,
+          toStructuredLog('python.run.timeout', {
+            scriptName,
+            timeoutMs,
+          }),
         );
         pythonProcess.kill('SIGKILL');
         reject(
@@ -149,7 +161,11 @@ export class PythonRunnerService {
         }
 
         if (!payload) {
-          this.logger.warn('Received RESULT_JSON marker without payload');
+          this.logger.warn(
+            toStructuredLog('python.run.result_json.empty_payload', {
+              scriptName,
+            }),
+          );
           return true;
         }
 
@@ -159,9 +175,10 @@ export class PythonRunnerService {
           return true;
         } catch (error) {
           this.logger.warn(
-            `Could not parse RESULT_JSON payload: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            toStructuredLog('python.run.result_json.invalid_payload', {
+              scriptName,
+              error: error instanceof Error ? error.message : String(error),
+            }),
           );
           return false;
         }
@@ -194,21 +211,40 @@ export class PythonRunnerService {
           }
 
           if (maybeEmitProgress(line)) {
-            this.logger.debug(`[Python progress]: ${line.trim()}`);
+            this.logger.debug(
+              toStructuredLog('python.run.progress', {
+                scriptName,
+                line: line.trim(),
+              }),
+            );
             continue;
           }
 
           if (maybeCaptureResult(line)) {
-            this.logger.debug('[Python result payload captured]');
+            this.logger.debug(
+              toStructuredLog('python.run.result_json.captured', {
+                scriptName,
+              }),
+            );
             continue;
           }
 
           if (isStdErr) {
             errorString += `${line}\n`;
-            this.logger.warn(`[Python stderr]: ${line}`);
+            this.logger.warn(
+              toStructuredLog('python.run.stderr', {
+                scriptName,
+                line,
+              }),
+            );
           } else {
             dataString += `${line}\n`;
-            this.logger.debug(`[Python stdout]: ${line}`);
+            this.logger.debug(
+              toStructuredLog('python.run.stdout', {
+                scriptName,
+                line,
+              }),
+            );
           }
         }
       };
@@ -231,18 +267,34 @@ export class PythonRunnerService {
         if (stdoutBuffer.trim()) {
           if (!maybeEmitProgress(stdoutBuffer) && !maybeCaptureResult(stdoutBuffer)) {
             dataString += `${stdoutBuffer}\n`;
-            this.logger.debug(`[Python stdout]: ${stdoutBuffer}`);
+            this.logger.debug(
+              toStructuredLog('python.run.stdout.trailing', {
+                scriptName,
+                line: stdoutBuffer,
+              }),
+            );
           }
         }
         if (stderrBuffer.trim()) {
           if (!maybeEmitProgress(stderrBuffer) && !maybeCaptureResult(stderrBuffer)) {
             errorString += `${stderrBuffer}\n`;
-            this.logger.warn(`[Python stderr]: ${stderrBuffer}`);
+            this.logger.warn(
+              toStructuredLog('python.run.stderr.trailing', {
+                scriptName,
+                line: stderrBuffer,
+              }),
+            );
           }
         }
 
         if (code !== 0) {
-          this.logger.error(`Python script failed with code ${code}`);
+          this.logger.error(
+            toStructuredLog('python.run.failed', {
+              scriptName,
+              code,
+              error: errorString || 'Unknown error',
+            }),
+          );
           reject(new Error(`Script failed: ${errorString || 'Unknown error'}`));
           return;
         }
@@ -270,7 +322,12 @@ export class PythonRunnerService {
           }
 
         } catch (error) {
-          this.logger.warn('Could not parse Python output as JSON');
+          this.logger.warn(
+            toStructuredLog('python.run.stdout.non_json', {
+              scriptName,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
           resolve({ rawOutput: dataString });
         }
       });

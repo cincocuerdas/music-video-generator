@@ -6,6 +6,7 @@ import { PIPELINE_JOB_TYPES } from '../pipeline.constants';
 import { PipelineOrchestratorService } from './pipeline-orchestrator.service';
 import { PipelineTransitionService } from './pipeline-transition.service';
 import { ProjectPipelineQualityService } from './project-pipeline-quality.service';
+import { toStructuredLog } from '../../../common/utils/structured-log.util';
 
 type StartPipelineMode = 'created' | 'reused';
 
@@ -29,7 +30,11 @@ export class PipelineLifecycleService {
     projectId: string,
     dispatchJob: (job: Job) => Promise<void>,
   ): Promise<Job[]> {
-    this.logger.log(`Intentando iniciar pipeline para proyecto: ${projectId}`);
+    this.logger.log(
+      toStructuredLog('pipeline.start.requested', {
+        projectId,
+      }),
+    );
     try {
       const startResult = await this.prisma.$transaction(
         async (tx): Promise<StartPipelineResult> => {
@@ -126,7 +131,10 @@ export class PipelineLifecycleService {
 
           if (project.status !== ProjectStatus.DRAFT) {
             this.logger.warn(
-              `El proyecto no estaba en DRAFT, estaba en ${project.status}. Reiniciando...`,
+              toStructuredLog('pipeline.start.restart_non_draft', {
+                projectId,
+                status: project.status,
+              }),
             );
           }
 
@@ -171,21 +179,41 @@ export class PipelineLifecycleService {
         await this.projectPipelineQualityService.clearMeta(projectId);
         const firstJob = jobs[0];
         await dispatchJob(firstJob);
-        this.logger.log(`Pipeline started successfully for project ${projectId}`);
+        this.logger.log(
+          toStructuredLog('pipeline.start.created', {
+            projectId,
+            firstJobType: firstJob.type,
+          }),
+        );
       } else if (!processingJob && firstPendingJob) {
         // Recovery path: pipeline exists but no worker is currently running.
         await dispatchJob(firstPendingJob);
         this.logger.log(
-          `Pipeline already existed for project ${projectId}; resumed from ${firstPendingJob.type}`,
+          toStructuredLog('pipeline.start.resumed', {
+            projectId,
+            firstPendingJobType: firstPendingJob.type,
+          }),
         );
       } else {
-        this.logger.log(`Pipeline already active for project ${projectId}; returning current jobs`);
+        this.logger.log(
+          toStructuredLog('pipeline.start.already_active', {
+            projectId,
+          }),
+        );
       }
 
       return jobs;
     } catch (error) {
-      this.logger.error('--- ERROR CRITICO EN START PIPELINE ---');
-      this.logger.error(error);
+      this.logger.error(
+        toStructuredLog('pipeline.start.failed', {
+          projectId,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error),
+        }),
+        error instanceof Error ? error.stack : undefined,
+      );
       throw error;
     }
   }
@@ -202,7 +230,12 @@ export class PipelineLifecycleService {
     const decision = this.pipelineTransitionService.resolveAdvanceDecision(projectId, jobs);
     if (decision.kind === 'dispatch') {
       await dispatchJob(decision.job);
-      this.logger.log(`Advanced pipeline to ${decision.job.type} for project ${projectId}`);
+      this.logger.log(
+        toStructuredLog('pipeline.advance.dispatched', {
+          projectId,
+          nextJobType: decision.job.type,
+        }),
+      );
       return decision.job;
     }
 
@@ -215,7 +248,11 @@ export class PipelineLifecycleService {
         where: { id: projectId },
         data: { status: ProjectStatus.COMPLETED },
       });
-      this.logger.log(`Pipeline completed for project ${projectId}`);
+      this.logger.log(
+        toStructuredLog('pipeline.advance.completed', {
+          projectId,
+        }),
+      );
       return null;
     }
 

@@ -14,6 +14,7 @@ Scripts moved from project root to keep the repository clean.
 - `test_secret_hygiene.js`: secret leakage check (token patterns + sensitive env assignments in tracked files).
 - `test_bullmq_retries.js`: BullMQ retry regression (transient failure retries and permanent failure exhausts attempts).
 - `test_auth_throttling.js`: auth rate-limit regression for `auth/dev-token`, `auth/login/dev`, `auth/refresh`, `auth/logout`, and `auth/me`.
+- `test_envelope_contract.js`: integration contract for API response shape in both legacy and envelope modes (`API_RESPONSE_ENVELOPE_ENABLED=false|true`) for success and error paths.
 - `test_pipeline_status.js`: regression for derived pipeline status projection (`success|degraded|failed`) across `/projects/:id/status`, `/projects/:id/video`, and `/jobs/pipeline/:id`.
 - `test_feedback_optimization.js`: regression for feedback stats + prompt optimization boosts from seeded likes/dislikes.
 - `test_ops_prepare.js`: deterministic test preflight (kills stale listeners on configured ports before integration tests).
@@ -47,6 +48,7 @@ npm run test:repo-hygiene
 npm run test:secret-hygiene
 npm run test:python-runner-contract
 npm run test:health-ops
+npm run test:envelope-contract
 npm run test:redis-client
 npm run test:bullmq-retries
 npm run test:auth-throttling

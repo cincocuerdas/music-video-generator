@@ -68,6 +68,9 @@ jobs:
       - name: Health ops tests
         run: npm run test:health-ops
 
+      - name: Envelope contract tests (legacy + envelope)
+        run: npm run test:envelope-contract
+
       - name: Pipeline status tests
         run: npm run test:pipeline-status
 

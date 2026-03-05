@@ -4,7 +4,7 @@ const http = require('http');
 const path = require('path');
 const { randomUUID, createHmac, timingSafeEqual } = require('crypto');
 const { spawn } = require('child_process');
-const { getApiBaseUrl, getPostgresContainerName, enablePgvectorExtension } = require('./test_config');
+const { getApiBaseUrl, getPostgresContainerName, enablePgvectorExtension, unwrapEnvelope } = require('./test_config');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const LOG_DIR = path.join(ROOT_DIR, 'storage', 'tmp-tests');
@@ -190,7 +190,7 @@ async function apiRequest(url, init = {}, timeoutMs = 10000) {
   if (result.status >= 400) {
     throw new Error(`HTTP ${result.status} on ${url}: ${JSON.stringify(result.data)}`);
   }
-  return result.data;
+  return unwrapEnvelope(result.data);
 }
 
 async function waitForHealth(attempts = 80, sleepMs = 2000) {

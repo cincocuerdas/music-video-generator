@@ -161,6 +161,18 @@ async function enablePgvectorExtension(options = {}) {
   throw lastError || new Error('enable_pgvector_unknown_error');
 }
 
+/**
+ * Unwrap API response envelope when API_RESPONSE_ENVELOPE_ENABLED=true.
+ * If body is `{ ok, data, meta }`, returns `body.data`; otherwise returns as-is.
+ * Safe to call even when envelope is disabled — acts as identity function.
+ */
+function unwrapEnvelope(body) {
+  if (body && typeof body === 'object' && 'ok' in body && 'data' in body && 'meta' in body) {
+    return body.data;
+  }
+  return body;
+}
+
 module.exports = {
   getApiBaseUrl,
   getPostgresContainerName,
@@ -168,4 +180,5 @@ module.exports = {
   getProdGuardBaseEnv,
   getRedisConnectionOptions,
   enablePgvectorExtension,
+  unwrapEnvelope,
 };

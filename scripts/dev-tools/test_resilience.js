@@ -7,6 +7,7 @@ const {
   getPostgresContainerName,
   getRedisContainerName,
   enablePgvectorExtension,
+  unwrapEnvelope,
 } = require('./test_config');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
@@ -128,7 +129,7 @@ async function apiRequest(url, init = {}, timeoutMs = 8000) {
       throw new Error(`HTTP ${response.status} on ${url}: ${JSON.stringify(data)}`);
     }
 
-    return data;
+    return unwrapEnvelope(data);
   } finally {
     clearTimeout(timer);
   }

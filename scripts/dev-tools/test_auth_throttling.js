@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { getApiBaseUrl, getPostgresContainerName, enablePgvectorExtension } = require('./test_config');
+const { getApiBaseUrl, getPostgresContainerName, enablePgvectorExtension, unwrapEnvelope } = require('./test_config');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const LOG_DIR = path.join(ROOT_DIR, 'storage', 'tmp-tests');
@@ -283,7 +283,7 @@ async function main() {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    const accessToken = initialLogin?.data?.accessToken;
+    const accessToken = unwrapEnvelope(initialLogin?.data)?.accessToken;
     if (!accessToken) {
       throw new Error('auth_me_missing_access_token');
     }

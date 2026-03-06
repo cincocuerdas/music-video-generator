@@ -82,7 +82,9 @@ This prevents breaking downloads/video streaming.
 2. Frontend adaptation: consume `{ ok, data, meta }` and `{ ok: false, error, meta }`.
 3. Production: switch flag to `true` only after compatibility verification.
 
-See [envelope-rollout-runbook.md](envelope-rollout-runbook.md) for the full canary rollout procedure.
+Current production rollout is documented for `Docker Compose / host` operation. Kubernetes canary remains a future-state variant only.
+
+See [envelope-rollout-runbook.md](envelope-rollout-runbook.md) for the active rollout procedure.
 
 ## Frontend Adapter
 
@@ -98,4 +100,3 @@ const projects = unwrapData<Project[]>(response.data);
 // Error: normalizes { ok: false, error, meta } OR { statusCode, message, ... }
 const { statusCode, message, meta } = unwrapError(error.response.data);
 ```
-

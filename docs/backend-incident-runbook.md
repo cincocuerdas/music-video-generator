@@ -3,6 +3,8 @@
 This runbook covers incidents in the pipeline:
 `YOUTUBE_DOWNLOAD -> TRANSCRIPTION -> ANALYZE_LYRICS -> GENERATE_IMAGES -> RENDER_VIDEO`.
 
+Current production operating model is `Docker Compose` on a host/VM. Commands below assume that runtime unless a section explicitly says otherwise.
+
 ## 1. Severity
 
 - `SEV-1`: API down or global pipeline unavailable.

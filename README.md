@@ -92,6 +92,8 @@ $env:PRE_PUSH_MODE="full"; git push; Remove-Item Env:PRE_PUSH_MODE
 
 Use the multi-stage `Dockerfile` plus `docker-compose.prod.yml`.
 
+Current documented production deployment model is `Docker Compose` on a host/VM. Operational runbooks in `docs/` assume this model unless they explicitly say `future-state Kubernetes`.
+
 1. Set required production env vars in `.env`:
 
 - `POSTGRES_USER`

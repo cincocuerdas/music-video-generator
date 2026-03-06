@@ -1,4 +1,4 @@
-# Validation Evidence — 2026-03-05
+# Validation Evidence - 2026-03-05
 
 ## Release: `v0.12.1-local-envelope-rollout`
 
@@ -6,15 +6,17 @@
 **Date:** 2026-03-05  
 **Envelope:** `API_RESPONSE_ENVELOPE_ENABLED=true`
 
+> Scope note: this document captures local or staging-style validation against a backend running with the response envelope enabled. It is evidence for pre-rollout readiness and post-change verification. It is not evidence of a real production Kubernetes canary.
+
 ---
 
 ## 1. Frontend Build
 
-```
+```text
 tsc -b && vite build
-✓ 2229 modules transformed
-✓ 0 TypeScript errors
-✓ Built in 12.45s
++ 2229 modules transformed
++ 0 TypeScript errors
++ Built in 12.45s
 ```
 
 Key bundles: `vendor-react-dom` (184 KB), `vendor-motion` (123 KB), `vendor-axios` (36 KB), `index` (41 KB).
@@ -23,7 +25,7 @@ Key bundles: `vendor-react-dom` (184 KB), `vendor-motion` (123 KB), `vendor-axio
 
 ## 2. Envelope API Evidence (3/3 pass)
 
-### 2.1 Health (200 — success envelope)
+### 2.1 Health (200 - success envelope)
 
 ```json
 {
@@ -67,7 +69,7 @@ Key bundles: `vendor-react-dom` (184 KB), `vendor-motion` (123 KB), `vendor-axio
 
 ---
 
-## 3. Quality Gate — test:ops 28/28
+## 3. Quality Gate - `test:ops` 28/28
 
 | Suite | Status |
 |-------|--------|
@@ -106,12 +108,12 @@ Key bundles: `vendor-react-dom` (184 KB), `vendor-motion` (123 KB), `vendor-axio
 
 ## 4. Smoke Baseline (post-release, envelope=true)
 
-Songs: Rick Astley + Despacito (Gangnam Style excluded — Whisper large-v3 CPU OOM on Korean).
+Songs: Rick Astley + Despacito (Gangnam Style excluded - Whisper large-v3 CPU OOM on Korean).
 
 | # | Song | projectId | pipelineStatus | degraded | Duration | Fallback |
 |---|------|-----------|---------------|----------|----------|----------|
-| 1 | Rick Astley — Never Gonna Give You Up | `6ba89540-02dd-4d3f-8fd0-30cf365c86cc` | completed | false | 614s | 0 |
-| 2 | Luis Fonsi — Despacito | `e5fc8296-378b-4369-b0a9-d20e0d9ee5a7` | completed | false | 1158s | 0 |
+| 1 | Rick Astley - Never Gonna Give You Up | `6ba89540-02dd-4d3f-8fd0-30cf365c86cc` | completed | false | 614s | 0 |
+| 2 | Luis Fonsi - Despacito | `e5fc8296-378b-4369-b0a9-d20e0d9ee5a7` | completed | false | 1158s | 0 |
 
 **Aggregate:** 2/2 completed, 0 failed, total 1783s.
 
@@ -121,7 +123,7 @@ Songs: Rick Astley + Despacito (Gangnam Style excluded — Whisper large-v3 CPU 
 |--------|-------|
 | pipeline_count | 30 |
 | p50 | 516s |
-| p95 | 27,364s (critical — includes historical outliers) |
+| p95 | 27,364s (critical - includes historical outliers) |
 | max | 45,617s |
 | degraded_rate | 0% (both runs non-degraded) |
 | fallback_count | 0 |
@@ -137,13 +139,13 @@ Songs: Rick Astley + Despacito (Gangnam Style excluded — Whisper large-v3 CPU 
 | RENDER_VIDEO | 167s | 4,058s |
 | FINALIZE | 516s | 27,364s |
 
-> Note: p95 values are inflated by historical outliers from stress tests and chaos testing (test:external-chaos, test:external-latency-chaos). The two clean smoke runs completed in 614s and 1158s respectively — well within normal operational bounds.
+> Note: p95 values are inflated by historical outliers from stress tests and chaos testing (`test:external-chaos`, `test:external-latency-chaos`). The two clean smoke runs completed in 614s and 1158s respectively, which is within the expected operational band for local validation.
 
 ---
 
 ## 5. Commit History
 
-```
+```text
 0af91f8 chore: finalize local envelope rollout validation
 de6f5c7 fix(client): exclude spec files from tsconfig.app build
 bd5df02 ci(gate): add test:envelope-contract to quality gate + test:ops chain

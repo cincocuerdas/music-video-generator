@@ -393,6 +393,42 @@ def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
     }
 
 
+def is_emotional_couple_closeup_scene(prompt: str, verse_type: str = None) -> bool:
+    text = f"{prompt or ''} {verse_type or ''}".lower()
+    couple_keywords = [
+        "couple", "two lovers", "lovers", "two people", "embracing", "embrace",
+        "foreheads touching", "holding each other close",
+    ]
+    emotion_keywords = [
+        "tears", "tear", "crying", "eyes shut", "eyes closed", "emotional",
+        "raw emotion", "weeping", "cheeks",
+    ]
+    return text_contains_any_keyword(text, couple_keywords) and text_contains_any_keyword(text, emotion_keywords)
+
+
+def enforce_emotional_couple_closeup(prompt: str) -> str:
+    text = (prompt or "").strip()
+    if not text:
+        return text
+
+    sanitized = text
+    for pattern in [
+        r"\bwide shot\b,?\s*",
+        r"\bfull body shot\b,?\s*",
+        r"\bfull-body shot\b,?\s*",
+        r"\bmedium shot\b,?\s*",
+        r"\bwide composition\b,?\s*",
+    ]:
+        sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+
+    sanitized = re.sub(r",\s*,", ", ", sanitized).strip(" ,")
+    closeup_suffix = (
+        ", tight close-up, head-and-shoulders framing only, both faces fully visible, "
+        "foreheads touching, eyes closed, visible tear tracks on both cheeks"
+    )
+    return f"{sanitized}{closeup_suffix}"
+
+
 def detect_scene_archetype(prompt: str, verse_type: str = None) -> str:
     text = f"{prompt or ''} {verse_type or ''}".lower()
     traits = detect_scene_traits(prompt, verse_type)
@@ -1043,6 +1079,9 @@ def generate_with_gemini_image(
     raw_prompt = prompt or ""
     scene_archetype = detect_scene_archetype(raw_prompt, "")
     prompt = sanitize_prompt_for_scene_archetype(raw_prompt, scene_archetype)
+    if is_emotional_couple_closeup_scene(prompt, ""):
+        prompt = enforce_emotional_couple_closeup(prompt)
+        print("  Gemini couple close-up enforcement active", file=sys.stderr)
     if prompt != raw_prompt:
         print(
             f"  Gemini archetype sanitization [{scene_archetype}]: removed portrait-only tokens",
@@ -1070,6 +1109,12 @@ def generate_with_gemini_image(
         trait_instructions.append(
             "Text/signage scene: render all text legibly with correct spelling. "
             "Keep text to 1-3 words on signs or objects."
+        )
+    if is_emotional_couple_closeup_scene(prompt, ""):
+        trait_instructions.append(
+            "Emotional couple close-up: use tight close-up framing only, both faces equally sharp, "
+            "foreheads touching, eyes closed, visible tear tracks on both cheeks, no wide shot, "
+            "no full body framing, and no fused or merged facial features."
         )
     if scene_archetype == "human_detail":
         # Detect specific sub-type for tailored guidance
@@ -1440,6 +1485,9 @@ def generate_with_comfyui(
     raw_prompt = prompt or ""
     scene_archetype = detect_scene_archetype(raw_prompt, verse_type)
     prompt = sanitize_prompt_for_scene_archetype(raw_prompt, scene_archetype)
+    if is_emotional_couple_closeup_scene(prompt, verse_type):
+        prompt = enforce_emotional_couple_closeup(prompt)
+        print("  Couple close-up enforcement active", file=sys.stderr)
     if prompt != raw_prompt:
         print(
             f"  Archetype sanitization [{scene_archetype}]: removed portrait-only tokens",
@@ -1672,6 +1720,15 @@ def generate_with_comfyui(
             quality_suffix += ", hands are the subject, natural finger anatomy, crowd secondary, no single portrait face dominance"
         else:
             quality_suffix += ", named detail is primary subject, human context allowed, no dominant portrait face"
+    elif is_emotional_couple_closeup_scene(prompt, verse_type):
+        quality_suffix += (
+            ", tight close-up framing, head-and-shoulders only, both faces equally sharp, "
+            "visible tear tracks, closed eyes, no wide shot, no full-body framing"
+        )
+        negative_prompt += (
+            ", wide shot, full body, medium-long shot, face fusion, merged faces, "
+            "shared facial features, extra eye, asymmetrical eyes, no visible tears"
+        )
     elif scene_archetype == "object_detail":
         quality_suffix += ", object remains primary subject, no dominant human face, subject-centric framing"
     elif scene_archetype == "animal_subject":

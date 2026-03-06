@@ -60,6 +60,7 @@ describe('PipelineLifecycleService.advancePipeline handoff', () => {
       pipelineOrchestrator as any,
       pipelineTransitionService as any,
       projectPipelineQualityService as any,
+      {} as any,
     );
 
     return {

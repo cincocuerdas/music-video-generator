@@ -24,6 +24,7 @@ import { ProjectPipelineQualityService } from './services/project-pipeline-quali
 import { PipelineTransitionService } from './services/pipeline-transition.service';
 import { PipelineStatusService } from './services/pipeline-status.service';
 import { PipelineLifecycleService } from './services/pipeline-lifecycle.service';
+import { PipelineStartReconciliationService } from './services/pipeline-start-reconciliation.service';
 import { DeadLetterOrchestratorService } from './services/dead-letter-orchestrator.service';
 import { DeadLetterQueryService } from './services/dead-letter-query.service';
 import { DeadLetterReplayService } from './services/dead-letter-replay.service';
@@ -50,6 +51,7 @@ import { PipelineCancellationService } from './services/pipeline-cancellation.se
     PipelineTransitionService,
     PipelineStatusService,
     PipelineLifecycleService,
+    PipelineStartReconciliationService,
     PipelineCancellationService,
     StyleLoraService,
     JobDispatchService,

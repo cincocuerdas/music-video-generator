@@ -371,7 +371,7 @@ async function main() {
 
     const projectId = await createProject(
       token,
-      `External Latency Chaos ${Date.now()}`,
+      `[synthetic:chaos] External Latency Chaos ${Date.now()}`,
       'Sigo caminando bajo luces lentas',
     );
     console.log(`seed_project=${projectId}`);

@@ -178,7 +178,11 @@ async function runPipeline(youtubeUrl, runIndex, totalRuns, token) {
     const project = await request(
       'POST',
       `${API}/projects`,
-      { title: `Smoke Baseline ${new Date().toISOString()}`, youtubeUrl, visualStyle: 'cinematic' },
+      {
+        title: `[synthetic:smoke] Smoke Baseline ${new Date().toISOString()}`,
+        youtubeUrl,
+        visualStyle: 'cinematic',
+      },
       token,
     );
     const projectBody = unwrap(project.data);

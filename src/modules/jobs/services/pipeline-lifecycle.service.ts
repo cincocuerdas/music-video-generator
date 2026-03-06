@@ -15,9 +15,32 @@ interface StartPipelineResult {
   mode: StartPipelineMode;
 }
 
+interface SyntheticRunMetadata {
+  isSynthetic: boolean;
+  runType: 'smoke' | 'chaos' | null;
+}
+
 @Injectable()
 export class PipelineLifecycleService {
   private readonly logger = new Logger(PipelineLifecycleService.name);
+
+  private classifySyntheticRun(title?: string | null): SyntheticRunMetadata {
+    const normalized = (title || '').trim().toLowerCase();
+    if (!normalized) {
+      return { isSynthetic: false, runType: null };
+    }
+    if (
+      normalized.includes('[synthetic:chaos]') ||
+      normalized.includes('external chaos') ||
+      normalized.includes('latency chaos')
+    ) {
+      return { isSynthetic: true, runType: 'chaos' };
+    }
+    if (normalized.includes('[synthetic:smoke]') || normalized.includes('smoke baseline')) {
+      return { isSynthetic: true, runType: 'smoke' };
+    }
+    return { isSynthetic: false, runType: null };
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,6 +68,7 @@ export class PipelineLifecycleService {
             where: { id: projectId },
             select: {
               id: true,
+              title: true,
               status: true,
               sourceMode: true,
               youtubeUrl: true,
@@ -152,6 +176,7 @@ export class PipelineLifecycleService {
 
           const createdJobs: Job[] = [];
           const pipelineCorrelationId = `pipeline:${projectId}:${randomUUID().slice(0, 8)}`;
+          const syntheticRun = this.classifySyntheticRun(project.title);
           for (let i = 0; i < pipelineDefinition.order.length; i++) {
             const job = await tx.job.create({
               data: {
@@ -161,10 +186,21 @@ export class PipelineLifecycleService {
                 inputData: {
                   correlationId: pipelineCorrelationId,
                   sourceMode: pipelineDefinition.source,
+                  isSynthetic: syntheticRun.isSynthetic,
+                  ...(syntheticRun.runType ? { syntheticRunType: syntheticRun.runType } : {}),
                 },
               },
             });
             createdJobs.push(job);
+          }
+
+          if (syntheticRun.isSynthetic) {
+            this.logger.log(
+              toStructuredLog('pipeline.synthetic.tagged', {
+                projectId,
+                runType: syntheticRun.runType,
+              }),
+            );
           }
 
           return { jobs: createdJobs, mode: 'created' };

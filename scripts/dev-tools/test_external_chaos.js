@@ -293,7 +293,7 @@ async function main() {
 
     const projectId = await createProject(
       token,
-      `External Chaos ${Date.now()}`,
+      `[synthetic:chaos] External Chaos ${Date.now()}`,
       'Camino en la noche y sigo adelante',
     );
     console.log(`seed_project=${projectId}`);

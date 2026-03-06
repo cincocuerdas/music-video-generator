@@ -296,6 +296,7 @@ export class HealthOpsMetricsService {
     youtubeUrl?: string | null;
     audioUrl?: string | null;
     lyrics?: string | null;
+    title?: string | null;
   } | null | undefined): SourceMode {
     if (!project) {
       return 'unknown';
@@ -327,6 +328,7 @@ export class HealthOpsMetricsService {
       youtubeUrl?: string | null;
       audioUrl?: string | null;
       lyrics?: string | null;
+      title?: string | null;
     } | null,
   ): SourceMode {
     const persistedSourceMode = this.normalizeSourceMode(project?.sourceMode);
@@ -355,6 +357,48 @@ export class HealthOpsMetricsService {
     throw new BadRequestException(
       `Invalid sourceMode "${sourceMode}". Allowed values: youtube, audio, lyrics, unknown.`,
     );
+  }
+
+  private isSyntheticInputData(inputData: unknown): boolean {
+    if (!inputData || typeof inputData !== 'object' || Array.isArray(inputData)) {
+      return false;
+    }
+    const payload = inputData as Record<string, unknown>;
+    const isSyntheticRaw = payload.isSynthetic;
+    if (
+      isSyntheticRaw === true ||
+      isSyntheticRaw === 1 ||
+      (typeof isSyntheticRaw === 'string' &&
+        ['true', '1', 'yes', 'synthetic'].includes(isSyntheticRaw.trim().toLowerCase()))
+    ) {
+      return true;
+    }
+    const syntheticRunType =
+      typeof payload.syntheticRunType === 'string' ? payload.syntheticRunType.trim().toLowerCase() : '';
+    if (['smoke', 'chaos', 'synthetic'].includes(syntheticRunType)) {
+      return true;
+    }
+    return false;
+  }
+
+  private isSyntheticProjectTitle(title?: string | null): boolean {
+    const normalized = (title || '').trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return (
+      normalized.includes('[synthetic:') ||
+      normalized.includes('smoke baseline') ||
+      normalized.includes('external chaos') ||
+      normalized.includes('latency chaos')
+    );
+  }
+
+  private isSyntheticJob(
+    inputData: unknown,
+    project?: { title?: string | null } | null,
+  ): boolean {
+    return this.isSyntheticInputData(inputData) || this.isSyntheticProjectTitle(project?.title);
   }
 
   private getManagedQueues(): Array<{ key: QueueKey; queue: Queue }> {
@@ -560,55 +604,67 @@ export class HealthOpsMetricsService {
     }));
   }
 
-  async getDurationByStage(hours = 24): Promise<Record<string, unknown>> {
+  async getDurationByStage(hours = 24, includeSynthetic = false): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
 
     const rows = await this.prisma.$queryRaw<DurationByStageRow[]>`
       SELECT
-        "type",
+        j."type",
         COUNT(*) FILTER (
-          WHERE "status" = 'COMPLETED'
-            AND "updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
+          WHERE j."status" = 'COMPLETED'
+            AND j."updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
         ) AS "completedWindow",
         COALESCE(
-          AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) * 1000)
+          AVG(EXTRACT(EPOCH FROM (j."updatedAt" - j."createdAt")) * 1000)
             FILTER (
-              WHERE "status" = 'COMPLETED'
-                AND "updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
+              WHERE j."status" = 'COMPLETED'
+                AND j."updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
             ),
           0
         ) AS "avgMs",
         COALESCE(
           PERCENTILE_CONT(0.50) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) * 1000
+            ORDER BY EXTRACT(EPOCH FROM (j."updatedAt" - j."createdAt")) * 1000
           ) FILTER (
-            WHERE "status" = 'COMPLETED'
-              AND "updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
+            WHERE j."status" = 'COMPLETED'
+              AND j."updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
           ),
           0
         ) AS "p50Ms",
         COALESCE(
           PERCENTILE_CONT(0.95) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) * 1000
+            ORDER BY EXTRACT(EPOCH FROM (j."updatedAt" - j."createdAt")) * 1000
           ) FILTER (
-            WHERE "status" = 'COMPLETED'
-              AND "updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
+            WHERE j."status" = 'COMPLETED'
+              AND j."updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
           ),
           0
         ) AS "p95Ms",
         COALESCE(
-          MAX(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) * 1000)
+          MAX(EXTRACT(EPOCH FROM (j."updatedAt" - j."createdAt")) * 1000)
             FILTER (
-              WHERE "status" = 'COMPLETED'
-                AND "updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
+              WHERE j."status" = 'COMPLETED'
+                AND j."updatedAt" >= NOW() - (${windowHours}::int * INTERVAL '1 hour')
             ),
           0
         ) AS "maxMs"
-      FROM "Job"
-      WHERE "type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
-      GROUP BY "type"
-      ORDER BY "type" ASC
+      FROM "Job" j
+      LEFT JOIN "Project" p ON p."id" = j."projectId"
+      WHERE j."type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+        AND (
+          ${includeSynthetic}::boolean = TRUE
+          OR NOT (
+            LOWER(COALESCE(j."inputData"->>'isSynthetic', 'false')) IN ('true', '1', 't', 'yes')
+            OR LOWER(COALESCE(j."inputData"->>'syntheticRunType', '')) IN ('smoke', 'chaos', 'synthetic')
+            OR LOWER(COALESCE(p."title", '')) LIKE '%[synthetic:%'
+            OR LOWER(COALESCE(p."title", '')) LIKE '%smoke baseline%'
+            OR LOWER(COALESCE(p."title", '')) LIKE '%external chaos%'
+            OR LOWER(COALESCE(p."title", '')) LIKE '%latency chaos%'
+          )
+        )
+      GROUP BY j."type"
+      ORDER BY j."type" ASC
     `;
 
     const stages = rows.map((row) => ({
@@ -626,13 +682,18 @@ export class HealthOpsMetricsService {
       status: 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      includeSynthetic,
       totalCompletedJobs: totalCompleted,
       stages,
       collectionMs: Date.now() - startedAt,
     };
   }
 
-  async getDegradedStageSnapshot(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
+  async getDegradedStageSnapshot(
+    hours = 24,
+    sourceMode?: string,
+    includeSynthetic = false,
+  ): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
     const sourceModeFilter = this.parseSourceModeFilter(sourceMode);
@@ -656,7 +717,16 @@ export class HealthOpsMetricsService {
             WHEN TRIM(COALESCE(p."audioUrl", '')) <> '' AND TRIM(COALESCE(p."lyrics", '')) = '' THEN 'audio'
             WHEN TRIM(COALESCE(p."lyrics", '')) <> '' OR TRIM(COALESCE(p."audioUrl", '')) <> '' THEN 'lyrics'
             ELSE 'unknown'
-          END AS "sourceMode"
+          END AS "sourceMode",
+          CASE
+            WHEN LOWER(COALESCE(j."inputData"->>'isSynthetic', 'false')) IN ('true', '1', 't', 'yes') THEN 1
+            WHEN LOWER(COALESCE(j."inputData"->>'syntheticRunType', '')) IN ('smoke', 'chaos', 'synthetic') THEN 1
+            WHEN LOWER(COALESCE(p."title", '')) LIKE '%[synthetic:%' THEN 1
+            WHEN LOWER(COALESCE(p."title", '')) LIKE '%smoke baseline%' THEN 1
+            WHEN LOWER(COALESCE(p."title", '')) LIKE '%external chaos%' THEN 1
+            WHEN LOWER(COALESCE(p."title", '')) LIKE '%latency chaos%' THEN 1
+            ELSE 0
+          END AS "isSynthetic"
         FROM "Job" j
         LEFT JOIN "Project" p ON p."id" = j."projectId"
         WHERE j."type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
@@ -677,6 +747,7 @@ export class HealthOpsMetricsService {
         ) AS "degradedWindow"
       FROM core_jobs
       WHERE (${sourceModeFilter}::text IS NULL OR "sourceMode" = ${sourceModeFilter}::text)
+        AND (${includeSynthetic}::boolean = TRUE OR "isSynthetic" = 0)
       GROUP BY "type", "sourceMode"
       ORDER BY "type" ASC, "sourceMode" ASC
     `;
@@ -835,6 +906,7 @@ export class HealthOpsMetricsService {
       status: criticalAlerts.length > 0 ? 'degraded' : 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      includeSynthetic,
       sourceModeFilter: sourceModeFilter ?? 'all',
       totals: {
         ...totals,
@@ -864,32 +936,51 @@ export class HealthOpsMetricsService {
     };
   }
 
-  async getDegradedStageSnapshotWithAlerts(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
-    const snapshot = await this.getDegradedStageSnapshot(hours, sourceMode);
+  async getDegradedStageSnapshotWithAlerts(
+    hours = 24,
+    sourceMode?: string,
+    includeSynthetic = false,
+  ): Promise<Record<string, unknown>> {
+    const snapshot = await this.getDegradedStageSnapshot(hours, sourceMode, includeSynthetic);
     // Avoid webhook spam from ad-hoc filtered queries; alerting should run on global snapshot.
-    if (!sourceMode || sourceMode.trim().length === 0) {
+    if ((!sourceMode || sourceMode.trim().length === 0) && !includeSynthetic) {
       await this.healthAlertingService.notifyDegradedStageIfNeeded(snapshot);
     }
     return snapshot;
   }
 
-  async getDegradedRateByLanguage(hours = 24): Promise<Record<string, unknown>> {
+  async getDegradedRateByLanguage(
+    hours = 24,
+    includeSynthetic = false,
+  ): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
 
     const rows = await this.prisma.$queryRaw<DegradedByLanguageRow[]>`
       WITH transcription_language AS (
         SELECT
-          COALESCE(NULLIF("inputData"->>'correlationId', ''), "projectId"::text) AS "pipelineKey",
-          COALESCE(NULLIF(LOWER(TRIM("outputData"->>'language')), ''), 'unknown') AS "language",
-          "updatedAt",
+          COALESCE(NULLIF(j."inputData"->>'correlationId', ''), j."projectId"::text) AS "pipelineKey",
+          COALESCE(NULLIF(LOWER(TRIM(j."outputData"->>'language')), ''), 'unknown') AS "language",
+          j."updatedAt",
           ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF("inputData"->>'correlationId', ''), "projectId"::text)
-            ORDER BY "updatedAt" DESC
+            PARTITION BY COALESCE(NULLIF(j."inputData"->>'correlationId', ''), j."projectId"::text)
+            ORDER BY j."updatedAt" DESC
           ) AS "rn"
-        FROM "Job"
-        WHERE "type" = 'TRANSCRIPTION'
-          AND "status" = 'COMPLETED'
+        FROM "Job" j
+        LEFT JOIN "Project" p ON p."id" = j."projectId"
+        WHERE j."type" = 'TRANSCRIPTION'
+          AND j."status" = 'COMPLETED'
+          AND (
+            ${includeSynthetic}::boolean = TRUE
+            OR NOT (
+              LOWER(COALESCE(j."inputData"->>'isSynthetic', 'false')) IN ('true', '1', 't', 'yes')
+              OR LOWER(COALESCE(j."inputData"->>'syntheticRunType', '')) IN ('smoke', 'chaos', 'synthetic')
+              OR LOWER(COALESCE(p."title", '')) LIKE '%[synthetic:%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%smoke baseline%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%external chaos%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%latency chaos%'
+            )
+          )
       ),
       project_language AS (
         SELECT
@@ -912,9 +1003,21 @@ export class HealthOpsMetricsService {
             ELSE 0
           END AS "isDegraded"
         FROM "Job" j
+        LEFT JOIN "Project" p ON p."id" = j."projectId"
         LEFT JOIN project_language pl
           ON pl."pipelineKey" = COALESCE(NULLIF(j."inputData"->>'correlationId', ''), j."projectId"::text)
         WHERE j."type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+          AND (
+            ${includeSynthetic}::boolean = TRUE
+            OR NOT (
+              LOWER(COALESCE(j."inputData"->>'isSynthetic', 'false')) IN ('true', '1', 't', 'yes')
+              OR LOWER(COALESCE(j."inputData"->>'syntheticRunType', '')) IN ('smoke', 'chaos', 'synthetic')
+              OR LOWER(COALESCE(p."title", '')) LIKE '%[synthetic:%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%smoke baseline%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%external chaos%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%latency chaos%'
+            )
+          )
       )
       SELECT
         "language",
@@ -971,6 +1074,7 @@ export class HealthOpsMetricsService {
       status: 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      includeSynthetic,
       totals: {
         ...totals,
         degradedRateTotalPct:
@@ -987,21 +1091,33 @@ export class HealthOpsMetricsService {
     };
   }
 
-  async getPipelineSlo(hours = 24): Promise<Record<string, unknown>> {
+  async getPipelineSlo(hours = 24, includeSynthetic = false): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
 
     const sloRows = await this.prisma.$queryRaw<PipelineSloRow[]>`
       WITH core_jobs AS (
         SELECT
-          COALESCE(NULLIF("inputData"->>'correlationId', ''), "projectId"::text) AS "pipelineKey",
-          "projectId",
-          "type",
-          "status",
-          "createdAt",
-          "updatedAt"
-        FROM "Job"
-        WHERE "type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+          COALESCE(NULLIF(j."inputData"->>'correlationId', ''), j."projectId"::text) AS "pipelineKey",
+          j."projectId",
+          j."type",
+          j."status",
+          j."createdAt",
+          j."updatedAt"
+        FROM "Job" j
+        LEFT JOIN "Project" p ON p."id" = j."projectId"
+        WHERE j."type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+          AND (
+            ${includeSynthetic}::boolean = TRUE
+            OR NOT (
+              LOWER(COALESCE(j."inputData"->>'isSynthetic', 'false')) IN ('true', '1', 't', 'yes')
+              OR LOWER(COALESCE(j."inputData"->>'syntheticRunType', '')) IN ('smoke', 'chaos', 'synthetic')
+              OR LOWER(COALESCE(p."title", '')) LIKE '%[synthetic:%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%smoke baseline%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%external chaos%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%latency chaos%'
+            )
+          )
       ),
       pipeline_timing AS (
         SELECT
@@ -1072,6 +1188,7 @@ export class HealthOpsMetricsService {
       status: sloStatus,
       timestamp: new Date().toISOString(),
       windowHours,
+      includeSynthetic,
       thresholds: {
         p95WarnMs: warnThresholdMs,
         p95CriticalMs: criticalThresholdMs,
@@ -1175,7 +1292,7 @@ export class HealthOpsMetricsService {
     };
   }
 
-  async getPipelineSloBreakdown(hours = 24): Promise<Record<string, unknown>> {
+  async getPipelineSloBreakdown(hours = 24, includeSynthetic = false): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
     const topN = Math.max(1, this.pipelineSloBreakdownTopN);
@@ -1183,16 +1300,28 @@ export class HealthOpsMetricsService {
     const rows = await this.prisma.$queryRaw<PipelineSloBreakdownRow[]>`
       WITH core_jobs AS (
         SELECT
-          COALESCE(NULLIF("inputData"->>'correlationId', ''), "projectId"::text) AS "pipelineKey",
-          "projectId"::text AS "projectId",
-          "type",
-          "status",
-          "createdAt",
-          "updatedAt",
-          "inputData",
-          "outputData"
-        FROM "Job"
-        WHERE "type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+          COALESCE(NULLIF(j."inputData"->>'correlationId', ''), j."projectId"::text) AS "pipelineKey",
+          j."projectId"::text AS "projectId",
+          j."type",
+          j."status",
+          j."createdAt",
+          j."updatedAt",
+          j."inputData",
+          j."outputData"
+        FROM "Job" j
+        LEFT JOIN "Project" p ON p."id" = j."projectId"
+        WHERE j."type" IN ('YOUTUBE_DOWNLOAD', 'TRANSCRIPTION', 'ANALYZE_LYRICS', 'GENERATE_IMAGES', 'RENDER_VIDEO', 'FINALIZE')
+          AND (
+            ${includeSynthetic}::boolean = TRUE
+            OR NOT (
+              LOWER(COALESCE(j."inputData"->>'isSynthetic', 'false')) IN ('true', '1', 't', 'yes')
+              OR LOWER(COALESCE(j."inputData"->>'syntheticRunType', '')) IN ('smoke', 'chaos', 'synthetic')
+              OR LOWER(COALESCE(p."title", '')) LIKE '%[synthetic:%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%smoke baseline%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%external chaos%'
+              OR LOWER(COALESCE(p."title", '')) LIKE '%latency chaos%'
+            )
+          )
       ),
       pipeline_source AS (
         SELECT
@@ -1398,6 +1527,7 @@ export class HealthOpsMetricsService {
       status: 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      includeSynthetic,
       topN,
       pipelineCount: pipelines.length,
       pipelines,
@@ -1405,7 +1535,7 @@ export class HealthOpsMetricsService {
     };
   }
 
-  async getOpsSnapshot() {
+  async getOpsSnapshot(includeSynthetic = false) {
     const startedAt = Date.now();
     const errors: string[] = [];
 
@@ -1451,7 +1581,7 @@ export class HealthOpsMetricsService {
     }
 
     try {
-      degradedByStage = await this.getDegradedStageSnapshotWithAlerts(24);
+      degradedByStage = await this.getDegradedStageSnapshotWithAlerts(24, undefined, includeSynthetic);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`degraded_stage_metrics_error:${message}`);
@@ -1467,7 +1597,7 @@ export class HealthOpsMetricsService {
     }
 
     try {
-      durationByStage = await this.getDurationByStage(24);
+      durationByStage = await this.getDurationByStage(24, includeSynthetic);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`duration_by_stage_error:${message}`);
@@ -1475,7 +1605,7 @@ export class HealthOpsMetricsService {
     }
 
     try {
-      degradedByLanguage = await this.getDegradedRateByLanguage(24);
+      degradedByLanguage = await this.getDegradedRateByLanguage(24, includeSynthetic);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`degraded_by_language_error:${message}`);
@@ -1483,7 +1613,7 @@ export class HealthOpsMetricsService {
     }
 
     try {
-      pipelineSlo = await this.getPipelineSlo(24);
+      pipelineSlo = await this.getPipelineSlo(24, includeSynthetic);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`pipeline_slo_error:${message}`);
@@ -1499,7 +1629,7 @@ export class HealthOpsMetricsService {
     }
 
     try {
-      pipelineSloBreakdown = await this.getPipelineSloBreakdown(24);
+      pipelineSloBreakdown = await this.getPipelineSloBreakdown(24, includeSynthetic);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`pipeline_slo_breakdown_error:${message}`);
@@ -1631,6 +1761,7 @@ export class HealthOpsMetricsService {
           ? 'degraded'
           : 'ok',
       timestamp: now,
+      includeSynthetic,
       uptimeSec: Math.round(process.uptime()),
       collectionMs: Date.now() - startedAt,
       queueTotals,
@@ -1670,7 +1801,11 @@ export class HealthOpsMetricsService {
     };
   }
 
-  async getPipelineQualitySummary(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
+  async getPipelineQualitySummary(
+    hours = 24,
+    sourceMode?: string,
+    includeSynthetic = false,
+  ): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
     const windowStart = new Date(Date.now() - windowHours * 60 * 60 * 1000);
@@ -1691,6 +1826,7 @@ export class HealthOpsMetricsService {
             youtubeUrl: true,
             audioUrl: true,
             lyrics: true,
+            title: true,
           },
         },
       },
@@ -1716,6 +1852,9 @@ export class HealthOpsMetricsService {
     >();
 
     for (const job of coreJobs) {
+      if (!includeSynthetic && this.isSyntheticJob(job.inputData, job.project)) {
+        continue;
+      }
       const jobType = String(job.type);
       const resolvedSourceMode = this.resolveSourceMode(job.inputData, job.project);
       if (sourceModeFilter && resolvedSourceMode !== sourceModeFilter) {
@@ -1829,6 +1968,7 @@ export class HealthOpsMetricsService {
       status: 'ok',
       timestamp: new Date().toISOString(),
       windowHours,
+      includeSynthetic,
       sourceModeFilter: sourceModeFilter ?? 'all',
       totals: {
         ...totals,

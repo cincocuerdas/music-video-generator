@@ -25,6 +25,8 @@ import { PipelineTransitionService } from './services/pipeline-transition.servic
 import { PipelineStatusService } from './services/pipeline-status.service';
 import { PipelineLifecycleService } from './services/pipeline-lifecycle.service';
 import { DeadLetterOrchestratorService } from './services/dead-letter-orchestrator.service';
+import { DeadLetterQueryService } from './services/dead-letter-query.service';
+import { DeadLetterReplayService } from './services/dead-letter-replay.service';
 import { StyleLoraService } from './services/style-lora.service';
 import { PipelineCancellationService } from './services/pipeline-cancellation.service';
 
@@ -40,6 +42,8 @@ import { PipelineCancellationService } from './services/pipeline-cancellation.se
   providers: [
     JobsService,
     DeadLetterService,
+    DeadLetterQueryService,
+    DeadLetterReplayService,
     DeadLetterOrchestratorService,
     StaleWatchdogService,
     PipelineOrchestratorService,

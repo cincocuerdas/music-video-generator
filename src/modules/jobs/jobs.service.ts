@@ -124,8 +124,4 @@ export class JobsService {
   ): Promise<void> {
     return this.styleLoraService.updateStyleLoraConfig(style, payload);
   }
-
-  async dispatchPipelineJob(job: Job): Promise<void> {
-    await this.pipelineDispatchCoordinatorService.dispatch(job);
-  }
 }

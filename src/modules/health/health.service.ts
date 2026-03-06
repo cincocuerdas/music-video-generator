@@ -9,7 +9,10 @@ export class HealthService {
     private readonly sloMitigationService: SloMitigationService,
   ) {}
 
-  async getOpsSnapshot(): Promise<Record<string, unknown>> {
+  async getOpsSnapshot(includeSynthetic?: boolean): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getOpsSnapshot(includeSynthetic);
+    }
     return this.healthOpsMetricsService.getOpsSnapshot();
   }
 
@@ -17,30 +20,64 @@ export class HealthService {
     return this.healthOpsMetricsService.getRealtimeEventsSnapshot();
   }
 
-  async getDegradedStageSnapshot(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
+  async getDegradedStageSnapshot(
+    hours = 24,
+    sourceMode?: string,
+    includeSynthetic?: boolean,
+  ): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getDegradedStageSnapshot(hours, sourceMode, includeSynthetic);
+    }
     return this.healthOpsMetricsService.getDegradedStageSnapshot(hours, sourceMode);
   }
 
   async getDegradedStageSnapshotWithAlerts(
     hours = 24,
     sourceMode?: string,
+    includeSynthetic?: boolean,
   ): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getDegradedStageSnapshotWithAlerts(
+        hours,
+        sourceMode,
+        includeSynthetic,
+      );
+    }
     return this.healthOpsMetricsService.getDegradedStageSnapshotWithAlerts(hours, sourceMode);
   }
 
-  async getPipelineQualitySummary(hours = 24, sourceMode?: string): Promise<Record<string, unknown>> {
+  async getPipelineQualitySummary(
+    hours = 24,
+    sourceMode?: string,
+    includeSynthetic?: boolean,
+  ): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getPipelineQualitySummary(hours, sourceMode, includeSynthetic);
+    }
     return this.healthOpsMetricsService.getPipelineQualitySummary(hours, sourceMode);
   }
 
-  async getDurationByStage(hours = 24): Promise<Record<string, unknown>> {
+  async getDurationByStage(hours = 24, includeSynthetic?: boolean): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getDurationByStage(hours, includeSynthetic);
+    }
     return this.healthOpsMetricsService.getDurationByStage(hours);
   }
 
-  async getDegradedRateByLanguage(hours = 24): Promise<Record<string, unknown>> {
+  async getDegradedRateByLanguage(
+    hours = 24,
+    includeSynthetic?: boolean,
+  ): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getDegradedRateByLanguage(hours, includeSynthetic);
+    }
     return this.healthOpsMetricsService.getDegradedRateByLanguage(hours);
   }
 
-  async getPipelineSlo(hours = 24): Promise<Record<string, unknown>> {
+  async getPipelineSlo(hours = 24, includeSynthetic?: boolean): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getPipelineSlo(hours, includeSynthetic);
+    }
     return this.healthOpsMetricsService.getPipelineSlo(hours);
   }
 
@@ -48,7 +85,13 @@ export class HealthService {
     return this.healthOpsMetricsService.getQueueWaitByStage(hours);
   }
 
-  async getPipelineSloBreakdown(hours = 24): Promise<Record<string, unknown>> {
+  async getPipelineSloBreakdown(
+    hours = 24,
+    includeSynthetic?: boolean,
+  ): Promise<Record<string, unknown>> {
+    if (typeof includeSynthetic === 'boolean') {
+      return this.healthOpsMetricsService.getPipelineSloBreakdown(hours, includeSynthetic);
+    }
     return this.healthOpsMetricsService.getPipelineSloBreakdown(hours);
   }
 

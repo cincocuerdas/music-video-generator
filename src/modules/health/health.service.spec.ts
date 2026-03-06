@@ -725,9 +725,11 @@ describe('HealthOpsMetricsService', () => {
     const [queryParts] = prisma.$queryRaw.mock.calls[0];
     const sql = Array.isArray(queryParts) ? queryParts.join('?') : String(queryParts);
 
-    expect(sql).toContain('COALESCE(NULLIF("inputData"->>\'correlationId\', \'\'), "projectId"::text)');
+    expect(sql).toContain('COALESCE(NULLIF(j."inputData"->>\'correlationId\', \'\'), j."projectId"::text)');
     expect(sql).toContain('ROW_NUMBER() OVER');
-    expect(sql).toContain('PARTITION BY COALESCE(NULLIF("inputData"->>\'correlationId\', \'\'), "projectId"::text)');
+    expect(sql).toContain(
+      'PARTITION BY COALESCE(NULLIF(j."inputData"->>\'correlationId\', \'\'), j."projectId"::text)',
+    );
     expect(sql).toContain('WHERE "rn" = 1');
   });
 
@@ -778,7 +780,9 @@ describe('HealthOpsMetricsService', () => {
     const [queryParts] = prisma.$queryRaw.mock.calls[0];
     const sql = Array.isArray(queryParts) ? queryParts.join('?') : String(queryParts);
 
-    expect(sql).toContain('COALESCE(NULLIF("inputData"->>\'correlationId\', \'\'), "projectId"::text) AS "pipelineKey"');
+    expect(sql).toContain(
+      'COALESCE(NULLIF(j."inputData"->>\'correlationId\', \'\'), j."projectId"::text) AS "pipelineKey"',
+    );
     expect(sql).toContain('GROUP BY "pipelineKey"');
     expect(sql).toContain('HAVING BOOL_OR("type" = \'FINALIZE\') = TRUE');
   });

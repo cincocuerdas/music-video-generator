@@ -1,4 +1,4 @@
-import { Controller, DefaultValuePipe, Get, ParseIntPipe, Query } from '@nestjs/common';
+import { BadRequestException, Controller, DefaultValuePipe, Get, ParseIntPipe, Query } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -13,6 +13,22 @@ import { HealthService } from './health.service';
 @ApiEnvelopeDefaultErrorResponses({ badRequest: true })
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
+
+  private parseIncludeSyntheticFlag(value?: string): boolean {
+    if (!value || value.trim().length === 0) {
+      return false;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no'].includes(normalized)) {
+      return false;
+    }
+    throw new BadRequestException(
+      `Invalid includeSynthetic "${value}". Allowed values: true, false, 1, 0, yes, no.`,
+    );
+  }
 
   @Get()
   @SkipThrottle({ default: true })
@@ -29,8 +45,8 @@ export class HealthController {
   @Throttle(THROTTLE_RULES.healthOps)
   @ApiOperation({ summary: 'Operational snapshot (aggregated metrics)' })
   @ApiEnvelopeOkResponse('Operational snapshot')
-  async ops(): Promise<Record<string, unknown>> {
-    return this.healthService.getOpsSnapshot();
+  async ops(@Query('includeSynthetic') includeSyntheticRaw?: string): Promise<Record<string, unknown>> {
+    return this.healthService.getOpsSnapshot(this.parseIncludeSyntheticFlag(includeSyntheticRaw));
   }
 
   @Get('ops/realtime')
@@ -48,8 +64,13 @@ export class HealthController {
   async degraded(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
     @Query('sourceMode') sourceMode?: string,
+    @Query('includeSynthetic') includeSyntheticRaw?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getDegradedStageSnapshotWithAlerts(hours, sourceMode);
+    return this.healthService.getDegradedStageSnapshotWithAlerts(
+      hours,
+      sourceMode,
+      this.parseIncludeSyntheticFlag(includeSyntheticRaw),
+    );
   }
 
   @Get('ops/pipeline-quality')
@@ -59,8 +80,13 @@ export class HealthController {
   async pipelineQuality(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
     @Query('sourceMode') sourceMode?: string,
+    @Query('includeSynthetic') includeSyntheticRaw?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getPipelineQualitySummary(hours, sourceMode);
+    return this.healthService.getPipelineQualitySummary(
+      hours,
+      sourceMode,
+      this.parseIncludeSyntheticFlag(includeSyntheticRaw),
+    );
   }
 
   @Get('ops/duration-by-stage')
@@ -69,8 +95,9 @@ export class HealthController {
   @ApiEnvelopeOkResponse('Duration by stage')
   async durationByStage(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+    @Query('includeSynthetic') includeSyntheticRaw?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getDurationByStage(hours);
+    return this.healthService.getDurationByStage(hours, this.parseIncludeSyntheticFlag(includeSyntheticRaw));
   }
 
   @Get('ops/degraded-by-language')
@@ -79,8 +106,12 @@ export class HealthController {
   @ApiEnvelopeOkResponse('Degraded rates grouped by language')
   async degradedByLanguage(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+    @Query('includeSynthetic') includeSyntheticRaw?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getDegradedRateByLanguage(hours);
+    return this.healthService.getDegradedRateByLanguage(
+      hours,
+      this.parseIncludeSyntheticFlag(includeSyntheticRaw),
+    );
   }
 
   @Get('ops/pipeline-slo')
@@ -89,8 +120,9 @@ export class HealthController {
   @ApiEnvelopeOkResponse('Pipeline SLO snapshot')
   async pipelineSlo(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+    @Query('includeSynthetic') includeSyntheticRaw?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getPipelineSlo(hours);
+    return this.healthService.getPipelineSlo(hours, this.parseIncludeSyntheticFlag(includeSyntheticRaw));
   }
 
   @Get('ops/queue-wait-by-stage')
@@ -109,8 +141,12 @@ export class HealthController {
   @ApiEnvelopeOkResponse('Pipeline SLO breakdown')
   async pipelineSloBreakdown(
     @Query('hours', new DefaultValuePipe(24), ParseIntPipe) hours: number,
+    @Query('includeSynthetic') includeSyntheticRaw?: string,
   ): Promise<Record<string, unknown>> {
-    return this.healthService.getPipelineSloBreakdown(hours);
+    return this.healthService.getPipelineSloBreakdown(
+      hours,
+      this.parseIncludeSyntheticFlag(includeSyntheticRaw),
+    );
   }
 
   @Get('ops/slo-mitigation')

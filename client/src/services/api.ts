@@ -10,6 +10,7 @@ import { unwrapData, unwrapError } from './apiEnvelope';
 
 const api = axios.create({
     baseURL: '/api/v1',
+    withCredentials: true, // send HttpOnly cookie when backend sets one
 });
 
 let refreshInFlight: Promise<string | null> | null = null;

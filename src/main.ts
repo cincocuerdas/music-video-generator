@@ -325,10 +325,30 @@ async function bootstrap() {
   app.setGlobalPrefix('api/v1');
 
   if (helmetEnabled) {
+    const corsOrigins = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+    const isDev = nodeEnv === 'development';
+
     app.use(
       helmet({
-        contentSecurityPolicy: false,
+        contentSecurityPolicy: isDev
+          ? false // relaxed in dev for Swagger UI, HMR, etc.
+          : {
+              directives: {
+                defaultSrc: ["'self'"],
+                scriptSrc: ["'self'"],
+                styleSrc: ["'self'", "'unsafe-inline'"],
+                imgSrc: ["'self'", 'data:', 'blob:'],
+                connectSrc: ["'self'", ...corsOrigins],
+                fontSrc: ["'self'"],
+                objectSrc: ["'none'"],
+                frameSrc: ["'none'"],
+                frameAncestors: ["'none'"],
+                baseUri: ["'self'"],
+                formAction: ["'self'"],
+              },
+            },
         crossOriginEmbedderPolicy: false,
+        referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
       }),
     );
   }
@@ -379,7 +399,7 @@ async function bootstrap() {
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('api/docs', app, document, {
       swaggerOptions: {
-        persistAuthorization: true,
+        persistAuthorization: nodeEnv === 'development',
       },
     });
     logger.log('Swagger docs enabled at /api/docs');

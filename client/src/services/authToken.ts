@@ -1,74 +1,73 @@
-const ACCESS_TOKEN_KEYS = ['auth_token', 'token'];
-const REFRESH_TOKEN_KEYS = ['refresh_token'];
+// ─── Token storage strategy ────────────────────────────────────────────
+// Access token: kept in-memory only (never persisted to localStorage).
+// Refresh token: when the backend sets an HttpOnly cookie on /auth/refresh
+//   and /auth/login/dev, the browser sends it automatically — no JS access
+//   needed. Until that backend change lands, we fall back to an in-memory
+//   variable so the existing login/bootstrap flow keeps working in local dev.
+// ────────────────────────────────────────────────────────────────────────
 
-export function getAuthToken(): string | null {
-    if (typeof window === 'undefined') {
-        return null;
-    }
+let _accessToken: string | null = null;
+let _refreshToken: string | null = null;
 
-    for (const key of ACCESS_TOKEN_KEYS) {
-        const value = window.localStorage.getItem(key);
-        if (value && value.trim()) {
-            return value.trim();
+// Legacy localStorage keys — only read once during migration, then removed.
+const LEGACY_ACCESS_KEYS = ['auth_token', 'token'];
+const LEGACY_REFRESH_KEYS = ['refresh_token'];
+
+/** One-time migration: pull tokens from localStorage into memory and wipe storage. */
+function migrateLegacyTokens(): void {
+    if (typeof window === 'undefined') return;
+
+    for (const key of LEGACY_ACCESS_KEYS) {
+        const val = window.localStorage.getItem(key);
+        if (val?.trim()) {
+            _accessToken ??= val.trim();
+            window.localStorage.removeItem(key);
         }
     }
+    for (const key of LEGACY_REFRESH_KEYS) {
+        const val = window.localStorage.getItem(key);
+        if (val?.trim()) {
+            _refreshToken ??= val.trim();
+            window.localStorage.removeItem(key);
+        }
+    }
+}
 
-    return null;
+// Run migration eagerly on module load.
+migrateLegacyTokens();
+
+export function getAuthToken(): string | null {
+    return _accessToken;
 }
 
 export function getRefreshToken(): string | null {
-    if (typeof window === 'undefined') {
-        return null;
-    }
-
-    for (const key of REFRESH_TOKEN_KEYS) {
-        const value = window.localStorage.getItem(key);
-        if (value && value.trim()) {
-            return value.trim();
-        }
-    }
-
-    return null;
-}
-
-function setAuthToken(token: string): void {
-    if (typeof window === 'undefined') {
-        return;
-    }
-
-    const normalized = token.trim();
-    if (!normalized) {
-        return;
-    }
-
-    window.localStorage.setItem('auth_token', normalized);
+    // When the backend sends the refresh token as an HttpOnly cookie,
+    // this function returns null and the browser handles it via credentials.
+    return _refreshToken;
 }
 
 export function setAuthTokens(accessToken: string, refreshToken?: string): void {
-    setAuthToken(accessToken);
-
-    if (typeof window === 'undefined' || !refreshToken) {
-        return;
+    const normalizedAccess = accessToken?.trim();
+    if (normalizedAccess) {
+        _accessToken = normalizedAccess;
     }
 
-    const normalizedRefresh = refreshToken.trim();
-    if (!normalizedRefresh) {
-        return;
+    if (refreshToken) {
+        const normalizedRefresh = refreshToken.trim();
+        if (normalizedRefresh) {
+            _refreshToken = normalizedRefresh;
+        }
     }
-
-    window.localStorage.setItem('refresh_token', normalizedRefresh);
 }
 
 export function clearAuthToken(): void {
-    if (typeof window === 'undefined') {
-        return;
-    }
+    _accessToken = null;
+    _refreshToken = null;
 
-    for (const key of ACCESS_TOKEN_KEYS) {
-        window.localStorage.removeItem(key);
-    }
-
-    for (const key of REFRESH_TOKEN_KEYS) {
-        window.localStorage.removeItem(key);
+    // Belt-and-suspenders: wipe any residual localStorage entries.
+    if (typeof window !== 'undefined') {
+        for (const key of [...LEGACY_ACCESS_KEYS, ...LEGACY_REFRESH_KEYS]) {
+            window.localStorage.removeItem(key);
+        }
     }
 }

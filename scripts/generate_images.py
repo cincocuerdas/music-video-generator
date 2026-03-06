@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from result_json import make_emit_result
-from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
+from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
 from env_utils import (
     parse_bool_env,
     parse_csv_env,
@@ -68,11 +68,6 @@ try:
     REDIS_UTILS_AVAILABLE = True
 except ImportError:
     REDIS_UTILS_AVAILABLE = False
-
-# Fix Windows console encoding issues
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # Load configuration
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -336,11 +331,7 @@ def resolve_hand_lora_mode() -> str:
     return "auto"
 
 
-def get_gemini_api_base_url() -> str:
-    value = (os.getenv("GEMINI_API_BASE_URL") or "").strip()
-    if not value:
-        return "https://generativelanguage.googleapis.com"
-    return value.rstrip("/")
+from runtime_config import get_gemini_api_base_url
 
 
 def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
@@ -3122,5 +3113,9 @@ def generate_images():
         return fallback
 
 if __name__ == "__main__":
-    generate_images()
+    with hard_stage_deadline(
+        max(0, parse_positive_int_env("GENERATE_IMAGES_STAGE_TIMEOUT_SEC", 1200)),
+        "image_generation",
+    ):
+        generate_images()
 

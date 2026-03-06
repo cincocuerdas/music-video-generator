@@ -15,7 +15,7 @@ import urllib.error
 from typing import Any, Dict, List, Optional
 import random
 from result_json import make_emit_result
-from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
+from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
 from env_utils import parse_int_env, parse_positive_int_env
 from gemini_semaphore import (
     backoff_with_jitter,
@@ -35,11 +35,6 @@ try:
     CLASSIFIER_AVAILABLE = True
 except ImportError:
     CLASSIFIER_AVAILABLE = False
-
-# Fix Windows console encoding issues
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # Load configuration
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,11 +60,7 @@ def get_db_connection():
 emit_result = make_emit_result("analysis")
 
 
-def get_gemini_api_base_url() -> str:
-    value = (os.getenv("GEMINI_API_BASE_URL") or "").strip()
-    if not value:
-        return "https://generativelanguage.googleapis.com"
-    return value.rstrip("/")
+from runtime_config import get_gemini_api_base_url
 
 
 def load_analysis_prompt_template() -> str:
@@ -1004,5 +995,6 @@ def analyze_lyrics():
         return result_payload
 
 if __name__ == "__main__":
-    analyze_lyrics()
+    with hard_stage_deadline(ANALYZE_LYRICS_STAGE_TIMEOUT_SEC, "analysis"):
+        analyze_lyrics()
 

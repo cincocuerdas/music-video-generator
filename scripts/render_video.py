@@ -14,8 +14,8 @@ import tempfile
 import shutil
 from dotenv import load_dotenv
 from result_json import make_emit_result
-from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
-from env_utils import parse_positive_int_env
+from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
+from env_utils import parse_float_env, parse_positive_int_env
 from db_utils import get_db_connection
 from ffmpeg_utils import resolve_ffmpeg_path
 from runtime_config import build_placeholder_image_url, is_placeholder_url
@@ -249,12 +249,7 @@ def get_aspect_dimensions(aspect_ratio: str) -> tuple:
 
 def read_unexposed_fallback_threshold() -> float:
     """Read ratio threshold to relax exposed=false filtering when too many frames are blocked."""
-    raw_value = os.getenv("RENDER_UNEXPOSED_FALLBACK_THRESHOLD", "0.4")
-    try:
-        threshold = float(raw_value)
-    except (TypeError, ValueError):
-        threshold = 0.4
-    return max(0.0, min(1.0, threshold))
+    return max(0.0, min(1.0, parse_float_env("RENDER_UNEXPOSED_FALLBACK_THRESHOLD", 0.4)))
 
 def render_video(project_id: str, song_path: str = None, analysis_data: dict = None):
     """
@@ -825,7 +820,7 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
         emit_result(fallback)
         return fallback
 
-if __name__ == "__main__":
+def _main():
     if len(sys.argv) < 2:
         emit_result(
             build_safe_render_result(
@@ -870,3 +865,8 @@ if __name__ == "__main__":
     else:
         print(f"Fetching project {project_id} from database", file=sys.stderr)
         render_video(project_id)
+
+
+if __name__ == "__main__":
+    with hard_stage_deadline(RENDER_VIDEO_STAGE_TIMEOUT_SEC, "render_video"):
+        _main()

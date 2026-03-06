@@ -18,10 +18,6 @@ import time
 from dotenv import load_dotenv
 from ffmpeg_utils import resolve_ffmpeg_path
 
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
 # Setup paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)

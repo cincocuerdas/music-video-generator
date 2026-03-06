@@ -28,12 +28,6 @@ from db_utils import get_db_connection
 from env_utils import parse_float_env, parse_positive_int_env
 
 
-# Fix Windows console encoding issues
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 dotenv_path = os.path.join(root_dir, '.env')

@@ -17,6 +17,7 @@ except ImportError:
 DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
 DEFAULT_PLACEHOLDER_BASE_URL = "https://placehold.co"
 DEFAULT_API_BASE_URL = "http://127.0.0.1:3000/api/v1"
+DEFAULT_GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com"
 
 
 def is_production() -> bool:
@@ -60,6 +61,13 @@ def get_api_base_url() -> str:
             "API_BASE_URL is required in production (no implicit local default).",
         )
     return DEFAULT_API_BASE_URL
+
+
+def get_gemini_api_base_url() -> str:
+    value = (os.getenv("GEMINI_API_BASE_URL") or "").strip()
+    if not value:
+        return DEFAULT_GEMINI_API_BASE_URL
+    return value.rstrip("/")
 
 
 def build_placeholder_image_url(

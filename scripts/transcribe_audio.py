@@ -6,22 +6,12 @@ Transcribes audio using Whisper and saves to database.
 import sys
 import os
 
-# Force UTF-8 on Windows before any output
-if os.name == "nt":
-    for _stream_name in ("stdout", "stderr"):
-        _stream = getattr(sys, _stream_name)
-        if hasattr(_stream, "reconfigure"):
-            try:
-                _stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
-
 import json
 import time
 import queue
 import threading
 from result_json import make_emit_result
-from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
+from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
 from env_utils import parse_positive_int_env
 try:
     from dotenv import load_dotenv
@@ -527,4 +517,5 @@ def main():
                 conn.close()
 
 if __name__ == "__main__":
-    main()
+    with hard_stage_deadline(TRANSCRIPTION_STAGE_TIMEOUT_SEC, "transcription"):
+        main()

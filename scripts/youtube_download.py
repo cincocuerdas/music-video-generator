@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 from result_json import make_emit_result
-from stage_deadline import bounded_timeout_seconds, make_stage_deadline_checker
+from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
 from env_utils import parse_positive_int_env
 
 try:
@@ -329,4 +329,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with hard_stage_deadline(YOUTUBE_DOWNLOAD_STAGE_TIMEOUT_SEC, "youtube_download"):
+        main()

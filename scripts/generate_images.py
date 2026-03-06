@@ -437,6 +437,8 @@ def detect_scene_archetype(prompt: str, verse_type: str = None) -> str:
         "person", "people", "man", "woman", "boy", "girl", "child", "children",
         "kids", "family", "friends", "couple", "human", "soldier", "old man",
         "mother", "father", "community",
+        "hunter", "hunters", "wizard", "witch", "archer", "warrior", "knight",
+        "vendor", "boxer", "singer",
     ]
     portrait_hint_keywords = [
         "solo", "1girl", "1boy", "portrait", "face", "close-up", "closeup",
@@ -444,6 +446,7 @@ def detect_scene_archetype(prompt: str, verse_type: str = None) -> str:
     animal_keywords = [
         "wolf", "dog", "cat", "horse", "bird", "eagle", "lion", "tiger", "bear",
         "fox", "deer", "snake", "shark", "whale", "animal",
+        "dragon", "phoenix", "griffin", "unicorn", "serpent",
     ]
     human_detail_keywords = [
         "boots", "boot", "shoe", "shoes", "hands", "hand", "fingers",

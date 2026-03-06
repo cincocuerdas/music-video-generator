@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Job, JobStatus, JobType, ProjectStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PIPELINE_JOB_TYPES } from '../pipeline.constants';
-import { PipelineDefinition } from './pipeline-orchestrator.service';
+import { PipelineDefinition } from './pipeline-definition.service';
 import { toStructuredLog } from '../../../common/utils/structured-log.util';
 
 type StartPipelineMode = 'created' | 'reused';

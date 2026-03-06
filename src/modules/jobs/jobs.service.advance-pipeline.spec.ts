@@ -42,9 +42,11 @@ describe('PipelineLifecycleService.advancePipeline handoff', () => {
       },
     };
 
-    const pipelineOrchestrator = {
+    const pipelinePreflight = {
       ensureProviderPreflight: jest.fn(),
       ensureProjectPreflight: jest.fn(),
+    };
+    const pipelineDefinitionSvc = {
       buildPipelineDefinition: jest.fn(),
       resolveProjectSourceMode: jest.fn(),
     };
@@ -57,7 +59,8 @@ describe('PipelineLifecycleService.advancePipeline handoff', () => {
 
     const service = new PipelineLifecycleService(
       prisma as any,
-      pipelineOrchestrator as any,
+      pipelinePreflight as any,
+      pipelineDefinitionSvc as any,
       pipelineTransitionService as any,
       projectPipelineQualityService as any,
       {} as any,

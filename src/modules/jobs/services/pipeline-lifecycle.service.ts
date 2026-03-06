@@ -1,7 +1,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Job, JobStatus, ProjectStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma';
-import { PipelineOrchestratorService } from './pipeline-orchestrator.service';
+import { PipelinePreflightService } from './pipeline-preflight.service';
+import { PipelineDefinitionService } from './pipeline-definition.service';
 import { PipelineTransitionService } from './pipeline-transition.service';
 import { ProjectPipelineQualityService } from './project-pipeline-quality.service';
 import { PipelineStartReconciliationService } from './pipeline-start-reconciliation.service';
@@ -13,7 +14,8 @@ export class PipelineLifecycleService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly pipelineOrchestrator: PipelineOrchestratorService,
+    private readonly pipelinePreflight: PipelinePreflightService,
+    private readonly pipelineDefinition: PipelineDefinitionService,
     private readonly pipelineTransitionService: PipelineTransitionService,
     private readonly projectPipelineQualityService: ProjectPipelineQualityService,
     private readonly startReconciliation: PipelineStartReconciliationService,
@@ -51,10 +53,10 @@ export class PipelineLifecycleService {
             throw new NotFoundException(`Project with id ${projectId} not found`);
           }
 
-          this.pipelineOrchestrator.ensureProviderPreflight();
-          this.pipelineOrchestrator.ensureProjectPreflight(project);
-          const pipelineDefinition = this.pipelineOrchestrator.buildPipelineDefinition(project);
-          const resolvedProjectSource = this.pipelineOrchestrator.resolveProjectSourceMode(project);
+          this.pipelinePreflight.ensureProviderPreflight();
+          this.pipelinePreflight.ensureProjectPreflight(project);
+          const pipelineDefinition = this.pipelineDefinition.buildPipelineDefinition(project);
+          const resolvedProjectSource = this.pipelineDefinition.resolveProjectSourceMode(project);
 
           if (project.sourceMode !== resolvedProjectSource) {
             await tx.project.update({

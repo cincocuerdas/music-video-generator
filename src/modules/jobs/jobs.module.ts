@@ -15,7 +15,7 @@ import { ProjectsModule } from '../projects/projects.module';
 import { ObservabilityModule } from '../observability';
 import { DeadLetterService } from './services/dead-letter.service';
 import { StaleWatchdogService } from './services/stale-watchdog.service';
-import { PipelineOrchestratorService } from './services/pipeline-orchestrator.service';
+
 import { JobDispatchService } from './services/job-dispatch.service';
 import { JobCrudService } from './services/job-crud.service';
 import { JobStateService } from './services/job-state.service';
@@ -25,6 +25,8 @@ import { PipelineTransitionService } from './services/pipeline-transition.servic
 import { PipelineStatusService } from './services/pipeline-status.service';
 import { PipelineLifecycleService } from './services/pipeline-lifecycle.service';
 import { PipelineStartReconciliationService } from './services/pipeline-start-reconciliation.service';
+import { PipelinePreflightService } from './services/pipeline-preflight.service';
+import { PipelineDefinitionService } from './services/pipeline-definition.service';
 import { DeadLetterOrchestratorService } from './services/dead-letter-orchestrator.service';
 import { DeadLetterQueryService } from './services/dead-letter-query.service';
 import { DeadLetterReplayService } from './services/dead-letter-replay.service';
@@ -47,7 +49,8 @@ import { PipelineCancellationService } from './services/pipeline-cancellation.se
     DeadLetterReplayService,
     DeadLetterOrchestratorService,
     StaleWatchdogService,
-    PipelineOrchestratorService,
+    PipelinePreflightService,
+    PipelineDefinitionService,
     PipelineTransitionService,
     PipelineStatusService,
     PipelineLifecycleService,

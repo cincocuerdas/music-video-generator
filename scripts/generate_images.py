@@ -334,34 +334,54 @@ def resolve_hand_lora_mode() -> str:
 from runtime_config import get_gemini_api_base_url
 
 
+def text_contains_keyword(text: str, keyword: str) -> bool:
+    pattern = rf"(?<!\w){re.escape(keyword.lower())}(?!\w)"
+    return re.search(pattern, text.lower()) is not None
+
+
+def text_contains_any_keyword(text: str, keywords: list[str]) -> bool:
+    return any(text_contains_keyword(text, keyword) for keyword in keywords)
+
+
 def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
     text = f"{prompt or ''} {verse_type or ''}".lower()
     text_keywords = [
         "text", "lettering", "typography", "sign", "billboard", "label", "packaging",
         "product shelf", "supermarket", "store aisle", "menu board", "price tag",
+        "banner", "poster", "graffiti", "neon sign", "marquee", "headline",
+        "newspaper", "book cover", "logo", "brand name", "title card",
         "cartel", "etiqueta", "pasillo", "productos", "letrero", "marca",
+        "pancarta", "afiche", "grafiti",
     ]
     crowd_keywords = [
         "crowd", "massive crowd", "huge crowd", "many people", "packed", "audience",
         "protest", "festival", "stadium", "parade", "busy street", "multitude",
-        "multitud", "mucha gente",
+        "spectators", "fans", "congregation", "rally", "concert crowd",
+        "mosh pit", "gathering", "assembly", "mob",
+        "multitud", "mucha gente", "espectadores", "aficionados", "publico",
     ]
     action_keywords = [
         "running", "jumping", "fighting", "boxing", "skateboarding", "surfing",
         "swimming", "underwater", "sprinting", "dancing", "parkour", "explosion",
         "chasing", "action shot", "dynamic motion", "race", "sports", "combat",
+        "climbing", "falling", "throwing", "kicking", "punching", "sliding",
+        "flying", "crashing", "wrestling", "spinning", "dodging",
         "nadando", "corriendo", "saltando", "deporte", "accion",
+        "peleando", "bailando", "escalando", "cayendo",
     ]
     multi_person_keywords = [
         "group", "group of", "friends", "family", "crowd", "many people", "multiple people",
         "children", "kids", "parents", "couple", "team", "people",
+        "two people", "three people", "duo", "trio", "band", "squad",
+        "coworkers", "colleagues", "companions", "classmates",
         "grupo", "familia", "multitud", "mucha gente", "personas",
+        "pareja", "amigos", "amigas", "companeros",
     ]
 
-    has_text_heavy = any(keyword in text for keyword in text_keywords)
-    has_crowd = any(keyword in text for keyword in crowd_keywords)
-    has_action = any(keyword in text for keyword in action_keywords)
-    has_multi_person = any(keyword in text for keyword in multi_person_keywords)
+    has_text_heavy = text_contains_any_keyword(text, text_keywords)
+    has_crowd = text_contains_any_keyword(text, crowd_keywords)
+    has_action = text_contains_any_keyword(text, action_keywords)
+    has_multi_person = text_contains_any_keyword(text, multi_person_keywords)
     if isinstance(verse_type, str) and verse_type.strip().upper() == "RHYTHMIC":
         has_action = True
 
@@ -373,6 +393,130 @@ def detect_scene_traits(prompt: str, verse_type: str = None) -> dict:
     }
 
 
+def detect_scene_archetype(prompt: str, verse_type: str = None) -> str:
+    text = f"{prompt or ''} {verse_type or ''}".lower()
+    traits = detect_scene_traits(prompt, verse_type)
+
+    explicit_people_keywords = [
+        "person", "people", "man", "woman", "boy", "girl", "child", "children",
+        "kids", "family", "friends", "couple", "human", "soldier", "old man",
+        "mother", "father", "community",
+    ]
+    portrait_hint_keywords = [
+        "solo", "1girl", "1boy", "portrait", "face", "close-up", "closeup",
+    ]
+    animal_keywords = [
+        "wolf", "dog", "cat", "horse", "bird", "eagle", "lion", "tiger", "bear",
+        "fox", "deer", "snake", "shark", "whale", "animal",
+    ]
+    human_detail_keywords = [
+        "boots", "boot", "shoe", "shoes", "hands", "hand", "fingers",
+        "phone", "scroll", "scrolls",
+    ]
+    object_keywords = [
+        "letter", "letters",
+        "newspaper", "microphone", "guitar", "drum", "bottle", "glass", "fork",
+        "knife", "book", "camera", "watch", "ring",
+        "pendant", "necklace", "bracelet",
+    ]
+    effect_keywords = [
+        "explosion", "explosions", "fireworks", "lightning", "storm", "smoke",
+        "flames", "fire", "sparks", "rain falls", "rain on", "shattered glass",
+        "broken glass", "glowing horizon",
+    ]
+    environment_keywords = [
+        "landscape", "horizon", "desert", "river", "skyline", "intersection",
+        "city street", "rooftop", "forest", "ocean", "sea", "mountain", "cliff",
+        "wide shot", "panoramic", "environment", "city lights",
+    ]
+    object_dominance_keywords = [
+        "shattered glass fragments",
+        "focus on the guitar", "focus on the microphone",
+        "subject is the glass", "subject is the bottle",
+    ]
+    human_detail_dominance_keywords = [
+        "focusing on the boots", "focusing on the boot", "focus on the boots",
+        "focus on the phone", "close-up shot on hands", "close-up of the boots",
+        "low angle shot focusing on the boots", "subject is the boots",
+        "subject is the phone", "subject is the scroll",
+        "focus on hands", "hands reaching", "hands are the subject",
+    ]
+
+    has_explicit_people = text_contains_any_keyword(text, explicit_people_keywords)
+    has_portrait_hint = text_contains_any_keyword(text, portrait_hint_keywords)
+    has_animal = text_contains_any_keyword(text, animal_keywords)
+    has_human_detail = text_contains_any_keyword(text, human_detail_keywords)
+    has_human_detail_dominance = text_contains_any_keyword(text, human_detail_dominance_keywords)
+    has_object = text_contains_any_keyword(text, object_keywords)
+    has_effect = text_contains_any_keyword(text, effect_keywords)
+    has_environment = text_contains_any_keyword(text, environment_keywords)
+    has_object_dominance = text_contains_any_keyword(text, object_dominance_keywords)
+
+    if traits.get("multiPerson"):
+        return "group_human"
+    if has_animal:
+        return "animal_subject"
+    if has_human_detail and (has_human_detail_dominance or not has_portrait_hint):
+        return "human_detail"
+    if has_object and (has_object_dominance or not has_explicit_people):
+        return "object_detail"
+    if has_effect and not has_explicit_people:
+        return "effect_scene"
+    if has_environment and not has_explicit_people and not has_portrait_hint:
+        return "environment_wide"
+    if has_explicit_people or has_portrait_hint:
+        return "portrait_human"
+    return "environment_wide"
+
+
+def prompt_has_human_portrait_contamination(prompt: str) -> bool:
+    text = (prompt or "").lower()
+    contamination_tokens = [
+        "solo, 1boy", "solo, 1girl", "1boy", "1girl", "portrait shot", "face focus",
+        "detailed face", "wearing casual clothes", "medium shot", "close-up shot",
+    ]
+    return text_contains_any_keyword(text, contamination_tokens)
+
+
+def sanitize_prompt_for_scene_archetype(prompt: str, archetype: str) -> str:
+    text = (prompt or "").strip()
+    if not text:
+        return text
+
+    patterns: list[str] = []
+    if archetype in {"group_human", "human_detail", "object_detail", "animal_subject", "effect_scene", "environment_wide"}:
+        patterns.extend(
+            [
+                r"\bsolo,\s*1boy\b,?\s*",
+                r"\bsolo,\s*1girl\b,?\s*",
+                r"\b1boy\b,?\s*",
+                r"\b1girl\b,?\s*",
+                r"\bportrait shot\b,?\s*",
+                r"\bface focus\b,?\s*",
+                r"\bdetailed face\b,?\s*",
+            ]
+        )
+    if archetype in {"object_detail", "animal_subject", "effect_scene", "environment_wide"}:
+        patterns.extend(
+            [
+                r"\bwearing casual clothes\b,?\s*",
+                r"\bmedium shot\b,?\s*",
+                r"\bclose-up shot on hands\b,?\s*",
+                r"\bclose-up shot\b,?\s*",
+            ]
+        )
+
+    sanitized = text
+    for pattern in patterns:
+        sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+
+    sanitized = re.sub(r"\s+,", ",", sanitized)
+    sanitized = re.sub(r",\s*,", ", ", sanitized)
+    sanitized = re.sub(r"\s{2,}", " ", sanitized)
+    sanitized = sanitized.strip(" ,")
+    return sanitized
+
+
 def scene_likely_has_people(prompt: str, verse_type: str = None) -> bool:
     text = f"{prompt or ''} {verse_type or ''}".lower()
     people_keywords = [
@@ -380,7 +524,7 @@ def scene_likely_has_people(prompt: str, verse_type: str = None) -> bool:
         "boy", "girl", "child", "children", "kids", "family", "friends",
         "group", "couple", "portrait", "face", "human", "community",
     ]
-    return any(keyword in text for keyword in people_keywords)
+    return text_contains_any_keyword(text, people_keywords)
 
 
 def normalize_routing_tokens(routing_reason: str) -> set[str]:
@@ -403,6 +547,7 @@ def compute_scene_quality_score(
     exposure_quality_score: float | None = None,
 ) -> tuple[float, list[str]]:
     traits = detect_scene_traits(prompt, verse_type)
+    archetype = detect_scene_archetype(prompt, verse_type)
     routing_tokens = normalize_routing_tokens(routing_reason)
     reasons: list[str] = []
     score = 0.82
@@ -431,6 +576,16 @@ def compute_scene_quality_score(
     if traits.get("action") and provider in {"pollinations", "picsum", "artic"}:
         score -= 0.08
         reasons.append("action_scene_non_specialized_provider")
+
+    # Pollinations truncates prompts at 500 chars — penalize when scene prompt
+    # was long enough that meaningful guidance was likely lost.
+    if provider == "pollinations" and len(prompt) > 450:
+        score -= 0.06
+        reasons.append("pollinations_prompt_truncated")
+
+    if archetype in {"object_detail", "animal_subject", "effect_scene", "environment_wide"} and prompt_has_human_portrait_contamination(prompt):
+        score -= 0.12
+        reasons.append("prompt_portrait_contamination")
 
     if exposed is False:
         score -= 0.08
@@ -885,12 +1040,92 @@ def generate_with_gemini_image(
     set_last_generation_metadata("gemini", model)
     base_url = get_gemini_api_base_url()
 
+    raw_prompt = prompt or ""
+    scene_archetype = detect_scene_archetype(raw_prompt, "")
+    prompt = sanitize_prompt_for_scene_archetype(raw_prompt, scene_archetype)
+    if prompt != raw_prompt:
+        print(
+            f"  Gemini archetype sanitization [{scene_archetype}]: removed portrait-only tokens",
+            file=sys.stderr,
+        )
+
     style_hint = f"{style} style" if style else "cinematic style"
     ratio_hint = f"{width}:{height}"
-    instruction = (
-        "Photorealistic image. Preserve readable text/logos exactly when requested. "
-        "Maintain coherent anatomy for multi-person scenes and dynamic motion when action is requested."
+
+    # Detect scene traits to give Gemini richer guidance (mirrors ComfyUI logic).
+    scene_traits = detect_scene_traits(prompt, "")
+    trait_instructions = []
+    if scene_traits.get("multiPerson") or scene_traits.get("crowd"):
+        trait_instructions.append(
+            "Multi-person scene: every visible face must have natural symmetry, "
+            "realistic eyes, correct finger count, and natural hand positioning. "
+            "Use deep depth of field so background faces remain sharp."
+        )
+    if scene_traits.get("action"):
+        trait_instructions.append(
+            "Action scene: convey kinetic energy through motion blur on limbs, "
+            "dynamic camera angle, and environmental movement cues."
+        )
+    if scene_traits.get("textHeavy"):
+        trait_instructions.append(
+            "Text/signage scene: render all text legibly with correct spelling. "
+            "Keep text to 1-3 words on signs or objects."
+        )
+    if scene_archetype == "human_detail":
+        # Detect specific sub-type for tailored guidance
+        _lower_prompt = (prompt or "").lower()
+        if any(w in _lower_prompt for w in ("boot", "boots", "shoe", "shoes")):
+            trait_instructions.append(
+                "Human-detail scene (boots): frame from knee-down or lower-leg emphasis, "
+                "no dominant face, boots occupy primary visual area."
+            )
+        elif any(w in _lower_prompt for w in ("hand", "hands", "finger", "fingers")):
+            trait_instructions.append(
+                "Human-detail scene (hands): hands are the subject, crowd remains secondary, "
+                "natural finger anatomy, no single portrait face dominance."
+            )
+        else:
+            trait_instructions.append(
+                "Human-detail scene: the named detail is the primary visual subject. "
+                "Human context is allowed but no dominant portrait face."
+            )
+    elif scene_archetype == "object_detail":
+        trait_instructions.append(
+            "Object-detail scene: keep the named object as the primary subject. "
+            "Do not add a dominant human face or portrait framing."
+        )
+    elif scene_archetype == "animal_subject":
+        trait_instructions.append(
+            "Animal scene: the main subject must remain clearly an animal with realistic anatomy. "
+            "Do not humanize the animal and do not add clothing."
+        )
+    elif scene_archetype in {"effect_scene", "environment_wide"}:
+        trait_instructions.append(
+            "Environment/effects scene: prioritize the environment or event itself. "
+            "Do not introduce a foreground human portrait unless the prompt explicitly asks for one."
+        )
+    elif scene_archetype == "group_human":
+        trait_instructions.append(
+            "Group scene: preserve face readability across the foreground and avoid portrait-style framing of a single person."
+        )
+
+    style_specific_instruction = ""
+    style_norm = style.lower().replace("-", " ") if style else ""
+    if style_norm in {"film noir", "noir"}:
+        style_specific_instruction = (
+            "Render in true film noir language: monochrome or near-monochrome, "
+            "deep blacks, stark contrast, moody smoke, hard shadows, 1940s noir composition. "
+            "Avoid warm daylight color grading and avoid generic modern portrait glamour."
+        )
+
+    base_instruction = (
+        "Photorealistic image with coherent subject emphasis, cinematic lighting, "
+        "and coherent anatomy. "
+        "AVOID: extra fingers, mutated hands, extra limbs, duplicate faces, "
+        "asymmetric eyes, watermarks, clones."
     )
+    extra = " ".join(trait_instructions)
+    instruction = f"{base_instruction} {style_specific_instruction} {extra}".strip()
     full_prompt = f"{prompt}, {style_hint}, aspect ratio {ratio_hint}. {instruction}"
 
     endpoint = f"{base_url}/v1beta/models/{model}:generateContent?key={api_key}"
@@ -964,9 +1199,15 @@ def generate_with_pollinations(
     if style:
         full_prompt = f"{prompt}, {style} style, high quality, detailed, cinematic"
 
-    # Truncate prompt if too long (URLs have limits)
+    # Smart truncation: preserve complete keywords instead of mid-word cut.
+    # Prioritize the scene description (beginning) over quality suffixes (end).
     if len(full_prompt) > 500:
-        full_prompt = full_prompt[:500]
+        truncated = full_prompt[:500]
+        # Cut at last comma or space to avoid mid-word break
+        last_sep = max(truncated.rfind(","), truncated.rfind(" "))
+        if last_sep > 300:
+            truncated = truncated[:last_sep]
+        full_prompt = truncated.rstrip(" ,")
 
     # URL encode the prompt
     encoded_prompt = urllib.parse.quote(full_prompt)
@@ -1196,6 +1437,14 @@ def generate_with_comfyui(
     import hashlib
 
     comfyui_url = get_comfyui_url()
+    raw_prompt = prompt or ""
+    scene_archetype = detect_scene_archetype(raw_prompt, verse_type)
+    prompt = sanitize_prompt_for_scene_archetype(raw_prompt, scene_archetype)
+    if prompt != raw_prompt:
+        print(
+            f"  Archetype sanitization [{scene_archetype}]: removed portrait-only tokens",
+            file=sys.stderr,
+        )
 
     # PROTAGONIST CONSISTENCY: Fixed base seed per project
     # Same project_id = same base_seed = consistent character appearance
@@ -1217,11 +1466,17 @@ def generate_with_comfyui(
 
     if checkpoint is None:
         prompt_lower = prompt.lower()
+        effective_has_people = scene_likely_has_people(prompt, verse_type)
+        effective_has_protagonist = bool(has_protagonist and scene_archetype in {"portrait_human", "group_human"} and effective_has_people)
 
         # Face/emotion focus detection (CRITICAL: never use LCM for faces)
-        has_face_focus = any(kw in prompt_lower for kw in
-                            ["face", "eyes", "portrait", "close-up", "closeup",
-                             "expression", "tears", "crying", "emotional", "intense"])
+        has_face_focus = scene_archetype == "portrait_human" and any(
+            kw in prompt_lower
+            for kw in [
+                "face", "eyes", "portrait", "close-up", "closeup",
+                "expression", "tears", "crying", "emotional", "intense",
+            ]
+        )
 
         # If verse_type not provided, detect from prompt keywords (fallback)
         if verse_type is None:
@@ -1236,7 +1491,7 @@ def generate_with_comfyui(
                 verse_type = "INTROSPECTIVE"
             elif any(kw in prompt_lower for kw in rhythmic_kw):
                 verse_type = "RHYTHMIC"
-            elif any(kw in prompt_lower for kw in atmosphere_kw) and not has_protagonist:
+            elif any(kw in prompt_lower for kw in atmosphere_kw) and not effective_has_protagonist:
                 verse_type = "TRANSITION"
             elif any(kw in prompt_lower for kw in literal_kw):
                 verse_type = "LITERAL"
@@ -1256,7 +1511,7 @@ def generate_with_comfyui(
             sampler = "dpmpp_2m"
             print(f"  Type: {verse_type} [FACE] → EpicRealism (CFG 5.0)", file=sys.stderr)
 
-        elif verse_type == "INTROSPECTIVE" and has_protagonist:
+        elif verse_type == "INTROSPECTIVE" and effective_has_protagonist:
             # Emotional, contemplative → EpicRealism soft aesthetic
             model_checkpoint = "epicrealismXL_vxviiCrystalclear.safetensors"
             steps = 30
@@ -1277,7 +1532,7 @@ def generate_with_comfyui(
             cfg = 2.0
             sampler = "dpmpp_sde"
 
-        elif verse_type == "LITERAL" and has_protagonist:
+        elif verse_type == "LITERAL" and effective_has_protagonist:
             # Concrete objects/actions → EpicRealism natural look
             model_checkpoint = "epicrealismXL_vxviiCrystalclear.safetensors"
             steps = 30
@@ -1285,7 +1540,7 @@ def generate_with_comfyui(
             sampler = "dpmpp_2m"
             print(f"  Type: LITERAL → EpicRealism (CFG 5.0)", file=sys.stderr)
 
-        elif verse_type == "NARRATIVE" and has_protagonist:
+        elif verse_type == "NARRATIVE" and effective_has_protagonist:
             # Story scenes → JuggernautXL for superior cinematic composition
             model_checkpoint = "juggernautXL_ragnarokBy.safetensors"
             steps = 30
@@ -1293,7 +1548,7 @@ def generate_with_comfyui(
             sampler = "dpmpp_2m"
             print(f"  Type: NARRATIVE → JuggernautXL Ragnarok (CFG 4.5)", file=sys.stderr)
 
-        elif verse_type == "TRANSITION" and not has_protagonist:
+        elif verse_type == "TRANSITION" and not effective_has_protagonist:
             # Atmosphere, environment → JuggernautXL for detailed landscapes
             model_checkpoint = "juggernautXL_ragnarokBy.safetensors"
             steps = 30
@@ -1301,7 +1556,7 @@ def generate_with_comfyui(
             sampler = "dpmpp_2m"
             print(f"  Type: TRANSITION → JuggernautXL Ragnarok (CFG 4.5)", file=sys.stderr)
 
-        elif verse_type == "REPETITION" and has_protagonist:
+        elif verse_type == "REPETITION" and effective_has_protagonist:
             # Repeated verse, new angle → JuggernautXL for distinct visual style
             model_checkpoint = "juggernautXL_ragnarokBy.safetensors"
             steps = 30
@@ -1367,6 +1622,9 @@ def generate_with_comfyui(
         "wall-eyed, cockeyed, squinting, deformed iris, deformed pupils"
     )
 
+    non_portrait_archetypes = {"human_detail", "object_detail", "animal_subject", "effect_scene", "environment_wide"}
+    human_scene = scene_archetype in {"portrait_human", "group_human"}
+
     if style_norm == 'hyper realistic' or style_norm == 'realistic':
         quality_suffix = ", photorealistic, high detail, masterpiece"
         negative_prompt = f"{neg_base}, (anime:1.2), (illustration:1.2), (drawing:1.2), (cartoon:1.2)"
@@ -1383,8 +1641,13 @@ def generate_with_comfyui(
         quality_suffix = ", magical atmosphere, ethereal lighting, fantasy world, ornate details"
         negative_prompt = f"{neg_base}, (modern:1.2), (tech:1.2), machinery"
     elif style_norm == 'film noir' or style_norm == 'noir':
-        quality_suffix = ", monochrome, black and white, dramatic high contrast, 1940s film still, smoky atmosphere"
-        negative_prompt = f"{neg_base}, (color:1.4), chromatic, vivid"
+        if scene_archetype in non_portrait_archetypes:
+            quality_suffix = ", monochrome, black and white, stark noir contrast, deep shadows, 1940s noir composition, smoky atmosphere, no dominant human portrait"
+        elif scene_archetype == "group_human":
+            quality_suffix = ", monochrome, black and white, dramatic high contrast, 1940s noir ensemble, smoky atmosphere"
+        else:
+            quality_suffix = ", monochrome, black and white, dramatic high contrast, 1940s film still, smoky atmosphere"
+        negative_prompt = f"{neg_base}, (color:1.4), chromatic, vivid, warm daylight, soft natural lighting"
     elif style_norm == 'cinematic':
         quality_suffix = ", cinematic film still, soft natural lighting, shallow depth of field, masterpiece"
         negative_prompt = f"{neg_base}, (saturated:1.2), neon, cartoon"
@@ -1398,8 +1661,23 @@ def generate_with_comfyui(
         negative_prompt = neg_base
     
     # Add minimal quality anchor (only if not a creative style)
-    if style_norm not in ['anime', 'ui design']:
+    if style_norm not in ['anime', 'ui design'] and human_scene:
         quality_suffix += ", natural skin texture"
+
+    if scene_archetype == "human_detail":
+        _lp = (prompt or "").lower()
+        if any(w in _lp for w in ("boot", "boots", "shoe", "shoes")):
+            quality_suffix += ", frame from knee-down, lower-leg emphasis, boots occupy primary visual area, no dominant face"
+        elif any(w in _lp for w in ("hand", "hands", "finger", "fingers")):
+            quality_suffix += ", hands are the subject, natural finger anatomy, crowd secondary, no single portrait face dominance"
+        else:
+            quality_suffix += ", named detail is primary subject, human context allowed, no dominant portrait face"
+    elif scene_archetype == "object_detail":
+        quality_suffix += ", object remains primary subject, no dominant human face, subject-centric framing"
+    elif scene_archetype == "animal_subject":
+        quality_suffix += ", realistic animal anatomy, fur detail, animal remains the primary subject, no human clothing"
+    elif scene_archetype in {"effect_scene", "environment_wide"}:
+        quality_suffix += ", wide environmental composition, no foreground portrait, no dominant human subject"
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 🧠 AI LEARNING INTEGRATION - Apply user feedback optimization

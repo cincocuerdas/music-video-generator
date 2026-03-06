@@ -1,5 +1,6 @@
 import { HealthService } from './health.service';
 import { HealthOpsMetricsService } from './services/health-ops-metrics.service';
+import { HealthPipelineClassificationService } from './services/health-pipeline-classification.service';
 import { SloMitigationService } from './services/slo-mitigation.service';
 
 describe('HealthOpsMetricsService', () => {
@@ -82,6 +83,7 @@ describe('HealthOpsMetricsService', () => {
       sloMitigationStub as any,
       eventsMetricsStub as any,
       circuitBreakerStub as any,
+      new HealthPipelineClassificationService(),
       queueStub as any,
       queueStub as any,
       queueStub as any,

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { JobStatus, JobType } from '@prisma/client';
@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma';
 import { QUEUE_NAMES } from '../../queue';
 import { HealthAlertingService } from '../health-alerting.service';
 import { SloMitigationService } from './slo-mitigation.service';
+import { HealthPipelineClassificationService } from './health-pipeline-classification.service';
 import { EventsMetricsService } from '../../events';
 import { parsePositiveIntEnv } from '../../../common/utils/env-parsers';
 import {
@@ -116,8 +117,6 @@ interface PipelineSloBreakdownRow {
   stageDegraded: number | boolean | string | null;
 }
 
-type SourceMode = 'youtube' | 'audio' | 'lyrics' | 'unknown';
-
 @Injectable()
 export class HealthOpsMetricsService {
   private readonly logger = new Logger(HealthOpsMetricsService.name);
@@ -168,6 +167,7 @@ export class HealthOpsMetricsService {
     private readonly sloMitigationService: SloMitigationService,
     private readonly eventsMetricsService: EventsMetricsService,
     private readonly circuitBreakerService: CircuitBreakerService,
+    private readonly pipelineClassification: HealthPipelineClassificationService,
     @InjectQueue(QUEUE_NAMES.YOUTUBE_DOWNLOAD)
     private readonly youtubeDownloadQueue: Queue,
     @InjectQueue(QUEUE_NAMES.TRANSCRIPTION)
@@ -265,140 +265,6 @@ export class HealthOpsMetricsService {
       minMs: Math.round(sorted[0]),
       maxMs: Math.round(sorted[sorted.length - 1]),
     };
-  }
-
-  private getStageOrder(type: string): number {
-    const order: Record<string, number> = {
-      YOUTUBE_DOWNLOAD: 1,
-      TRANSCRIPTION: 2,
-      ANALYZE_LYRICS: 3,
-      GENERATE_IMAGES: 4,
-      RENDER_VIDEO: 5,
-      FINALIZE: 6,
-      TRAIN_LORA: 99,
-    };
-    return order[type] ?? 999;
-  }
-
-  private normalizeSourceMode(value: unknown): SourceMode {
-    if (typeof value !== 'string') {
-      return 'unknown';
-    }
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'youtube' || normalized === 'audio' || normalized === 'lyrics') {
-      return normalized;
-    }
-    return 'unknown';
-  }
-
-  private inferSourceModeFromProject(project: {
-    sourceMode?: string | null;
-    youtubeUrl?: string | null;
-    audioUrl?: string | null;
-    lyrics?: string | null;
-    title?: string | null;
-  } | null | undefined): SourceMode {
-    if (!project) {
-      return 'unknown';
-    }
-    const persistedSourceMode = this.normalizeSourceMode(project.sourceMode);
-    if (persistedSourceMode !== 'unknown') {
-      return persistedSourceMode;
-    }
-    const youtubeUrl = (project.youtubeUrl || '').trim();
-    const audioUrl = (project.audioUrl || '').trim();
-    const lyrics = (project.lyrics || '').trim();
-
-    if (youtubeUrl) {
-      return 'youtube';
-    }
-    if (audioUrl && !lyrics) {
-      return 'audio';
-    }
-    if (lyrics || audioUrl) {
-      return 'lyrics';
-    }
-    return 'unknown';
-  }
-
-  private resolveSourceMode(
-    inputData: unknown,
-    project: {
-      sourceMode?: string | null;
-      youtubeUrl?: string | null;
-      audioUrl?: string | null;
-      lyrics?: string | null;
-      title?: string | null;
-    } | null,
-  ): SourceMode {
-    const persistedSourceMode = this.normalizeSourceMode(project?.sourceMode);
-    if (persistedSourceMode !== 'unknown') {
-      return persistedSourceMode;
-    }
-    const payloadSourceMode =
-      inputData && typeof inputData === 'object' && !Array.isArray(inputData)
-        ? (inputData as Record<string, unknown>).sourceMode
-        : null;
-    const normalizedPayloadSource = this.normalizeSourceMode(payloadSourceMode);
-    if (normalizedPayloadSource !== 'unknown') {
-      return normalizedPayloadSource;
-    }
-    return this.inferSourceModeFromProject(project);
-  }
-
-  private parseSourceModeFilter(sourceMode?: string): SourceMode | null {
-    if (typeof sourceMode !== 'string' || sourceMode.trim().length === 0) {
-      return null;
-    }
-    const normalized = sourceMode.trim().toLowerCase();
-    if (normalized === 'youtube' || normalized === 'audio' || normalized === 'lyrics' || normalized === 'unknown') {
-      return normalized;
-    }
-    throw new BadRequestException(
-      `Invalid sourceMode "${sourceMode}". Allowed values: youtube, audio, lyrics, unknown.`,
-    );
-  }
-
-  private isSyntheticInputData(inputData: unknown): boolean {
-    if (!inputData || typeof inputData !== 'object' || Array.isArray(inputData)) {
-      return false;
-    }
-    const payload = inputData as Record<string, unknown>;
-    const isSyntheticRaw = payload.isSynthetic;
-    if (
-      isSyntheticRaw === true ||
-      isSyntheticRaw === 1 ||
-      (typeof isSyntheticRaw === 'string' &&
-        ['true', '1', 'yes', 'synthetic'].includes(isSyntheticRaw.trim().toLowerCase()))
-    ) {
-      return true;
-    }
-    const syntheticRunType =
-      typeof payload.syntheticRunType === 'string' ? payload.syntheticRunType.trim().toLowerCase() : '';
-    if (['smoke', 'chaos', 'synthetic'].includes(syntheticRunType)) {
-      return true;
-    }
-    return false;
-  }
-
-  private isSyntheticProjectTitle(title?: string | null): boolean {
-    const normalized = (title || '').trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-    return (
-      normalized.includes('[synthetic:') ||
-      normalized.includes('smoke baseline') ||
-      normalized.includes('external chaos') ||
-      normalized.includes('latency chaos')
-    );
-  }
-
-  private isSyntheticJob(
-    inputData: unknown,
-    project?: { title?: string | null } | null,
-  ): boolean {
-    return this.isSyntheticInputData(inputData) || this.isSyntheticProjectTitle(project?.title);
   }
 
   private getManagedQueues(): Array<{ key: QueueKey; queue: Queue }> {
@@ -696,7 +562,7 @@ export class HealthOpsMetricsService {
   ): Promise<Record<string, unknown>> {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
-    const sourceModeFilter = this.parseSourceModeFilter(sourceMode);
+    const sourceModeFilter = this.pipelineClassification.parseSourceModeFilter(sourceMode);
     const rows = await this.prisma.$queryRaw<DegradedByTypeRow[]>`
       WITH core_jobs AS (
         SELECT
@@ -764,7 +630,7 @@ export class HealthOpsMetricsService {
 
       return {
         type: row.type,
-        sourceMode: this.normalizeSourceMode(row.sourceMode),
+        sourceMode: this.pipelineClassification.normalizeSourceMode(row.sourceMode),
         completedTotal,
         degradedTotal,
         degradedRateTotalPct,
@@ -1280,7 +1146,11 @@ export class HealthOpsMetricsService {
       }),
     );
 
-    stages.sort((a, b) => this.getStageOrder(a.type) - this.getStageOrder(b.type));
+    stages.sort(
+      (a, b) =>
+        this.pipelineClassification.getStageOrder(a.type) -
+        this.pipelineClassification.getStageOrder(b.type),
+    );
 
     return {
       status: 'ok',
@@ -1443,7 +1313,7 @@ export class HealthOpsMetricsService {
         pipelineMap.set(row.pipelineKey, {
           pipelineKey: row.pipelineKey,
           projectId: row.projectId,
-          sourceMode: this.normalizeSourceMode(row.sourceMode),
+          sourceMode: this.pipelineClassification.normalizeSourceMode(row.sourceMode),
           startedAt: new Date(startedAtMs).toISOString(),
           finishedAt: new Date(finishedAtMs).toISOString(),
           totalDurationMs: Math.round(Number(row.totalDurationMs || 0)),
@@ -1477,7 +1347,7 @@ export class HealthOpsMetricsService {
         durationMs: Math.round(Number(row.stageDurationMs || 0)),
         retries,
         degraded: stageDegraded,
-        stageOrder: this.getStageOrder(row.stageType),
+        stageOrder: this.pipelineClassification.getStageOrder(row.stageType),
         stageCreatedAt: stageCreatedAtMs ? new Date(stageCreatedAtMs).toISOString() : null,
         stageUpdatedAt: stageUpdatedAtMs ? new Date(stageUpdatedAtMs).toISOString() : null,
         stageCreatedAtMs,
@@ -1809,7 +1679,7 @@ export class HealthOpsMetricsService {
     const startedAt = Date.now();
     const windowHours = this.normalizeWindowHours(hours);
     const windowStart = new Date(Date.now() - windowHours * 60 * 60 * 1000);
-    const sourceModeFilter = this.parseSourceModeFilter(sourceMode);
+    const sourceModeFilter = this.pipelineClassification.parseSourceModeFilter(sourceMode);
 
     const jobs = await this.prisma.job.findMany({
       where: {
@@ -1852,11 +1722,11 @@ export class HealthOpsMetricsService {
     >();
 
     for (const job of coreJobs) {
-      if (!includeSynthetic && this.isSyntheticJob(job.inputData, job.project)) {
+      if (!includeSynthetic && this.pipelineClassification.isSyntheticJob(job.inputData, job.project)) {
         continue;
       }
       const jobType = String(job.type);
-      const resolvedSourceMode = this.resolveSourceMode(job.inputData, job.project);
+      const resolvedSourceMode = this.pipelineClassification.resolveSourceMode(job.inputData, job.project);
       if (sourceModeFilter && resolvedSourceMode !== sourceModeFilter) {
         continue;
       }

@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { RedisClientService } from '../../redis';
 import { EventsGateway } from '../../events/events.gateway';
-import * as fs from 'fs';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 import Redis from 'ioredis';
 
@@ -33,13 +33,13 @@ export class LiveSteeringService implements OnModuleDestroy {
     }
   }
 
-  private getLiveSignalPath(projectId: string): string {
-    const signalsDir = path.join(process.cwd(), 'output', 'live-signals');
+  private getSignalsDir(): string {
+    return path.join(process.cwd(), 'output', 'live-signals');
+  }
 
-    if (!fs.existsSync(signalsDir)) {
-      fs.mkdirSync(signalsDir, { recursive: true });
-    }
-
+  private async getLiveSignalPath(projectId: string): Promise<string> {
+    const signalsDir = this.getSignalsDir();
+    await fs.mkdir(signalsDir, { recursive: true });
     return path.join(signalsDir, `${projectId}.json`);
   }
 
@@ -47,7 +47,7 @@ export class LiveSteeringService implements OnModuleDestroy {
     projectId: string,
     signal: { type: 'boost' | 'correct'; sceneIndex: number; timestamp?: number; intensity?: number; reason?: string },
   ) {
-    const filePath = this.getLiveSignalPath(projectId);
+    const filePath = await this.getLiveSignalPath(projectId);
 
     const signalData = {
       ...signal,
@@ -57,7 +57,7 @@ export class LiveSteeringService implements OnModuleDestroy {
     };
 
     // 1. Write to file (fallback for Python)
-    fs.writeFileSync(filePath, JSON.stringify(signalData, null, 2));
+    await fs.writeFile(filePath, JSON.stringify(signalData, null, 2), 'utf-8');
 
     // 2. Write to Redis (faster for Python to read)
     if (this.redisClient) {
@@ -92,14 +92,15 @@ export class LiveSteeringService implements OnModuleDestroy {
   }
 
   async getLiveSignal(projectId: string) {
-    const filePath = this.getLiveSignalPath(projectId);
+    const filePath = path.join(this.getSignalsDir(), `${projectId}.json`);
 
     try {
-      if (fs.existsSync(filePath)) {
-        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        return data;
-      }
+      const raw = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(raw);
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
       this.logger.warn(`Failed to read live signal for ${projectId}: ${error.message}`);
     }
 
@@ -107,15 +108,15 @@ export class LiveSteeringService implements OnModuleDestroy {
   }
 
   async clearLiveSignal(projectId: string) {
-    const filePath = this.getLiveSignalPath(projectId);
+    const filePath = path.join(this.getSignalsDir(), `${projectId}.json`);
 
     // 1. Clear file
     try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
+      await fs.unlink(filePath);
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       this.logger.warn(`Failed to clear live signal file for ${projectId}: ${error.message}`);
+      }
     }
 
     // 2. Clear Redis

@@ -332,4 +332,194 @@ describe('AuthService', () => {
     expect(user.userId).toBe(ALT_USER_ID);
     expect(user.token).toBe(token);
   });
+
+  // ── logout ────────────────────────────────────────────────────────
+
+  it('logout revokes session for valid refresh token', async () => {
+    const { service, prisma } = createService();
+    const sessionId = '55555555-5555-4555-8555-555555555555';
+    const refreshToken = sign(
+      { sub: DEV_USER_ID, sid: sessionId, type: 'refresh' },
+      process.env.JWT_REFRESH_SECRET as string,
+      { algorithm: 'HS256', expiresIn: '1h' },
+    );
+
+    const result = await service.logout(refreshToken);
+
+    expect(result).toEqual({ success: true });
+    expect(prisma.authSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: sessionId, userId: DEV_USER_ID, revokedAt: null },
+        data: expect.objectContaining({ revokedAt: expect.any(Date) }),
+      }),
+    );
+  });
+
+  it('logout without token returns success without touching sessions', async () => {
+    const { service, prisma } = createService();
+
+    const result = await service.logout(undefined);
+
+    expect(result).toEqual({ success: true });
+    expect(prisma.authSession.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('logout with expired refresh token returns success (idempotent)', async () => {
+    const { service, prisma } = createService();
+    const expiredToken = sign(
+      { sub: DEV_USER_ID, sid: '66666666-6666-4666-8666-666666666666', type: 'refresh' },
+      process.env.JWT_REFRESH_SECRET as string,
+      { algorithm: 'HS256', expiresIn: '-10s' },
+    );
+
+    const result = await service.logout(expiredToken);
+
+    expect(result).toEqual({ success: true });
+    expect(prisma.authSession.updateMany).not.toHaveBeenCalled();
+  });
+
+  // ── getUserIdFromRequest ──────────────────────────────────────────
+
+  it('getUserIdFromRequest returns userId when user is present', () => {
+    const { service } = createService();
+    const req = { user: { userId: DEV_USER_ID, token: 'tok', claims: {} } } as any;
+
+    expect(service.getUserIdFromRequest(req)).toBe(DEV_USER_ID);
+  });
+
+  it('getUserIdFromRequest throws when user is absent', () => {
+    const { service } = createService();
+    const req = {} as any;
+
+    expect(() => service.getUserIdFromRequest(req)).toThrow(UnauthorizedException);
+  });
+
+  // ── authenticateRequest negative paths ────────────────────────────
+
+  it('rejects token with non-UUID sub claim', () => {
+    const { service } = createService();
+    const token = sign(
+      { sub: 'not-a-uuid', role: 'user' },
+      process.env.JWT_SECRET as string,
+      { algorithm: 'HS256', expiresIn: '1h' },
+    );
+    const req = buildRequest(`Bearer ${token}`);
+
+    expect(() => service.authenticateRequest(req)).toThrow(UnauthorizedException);
+  });
+
+  it('rejects token without any user id claim', () => {
+    const { service } = createService();
+    const token = sign(
+      { role: 'user' },
+      process.env.JWT_SECRET as string,
+      { algorithm: 'HS256', expiresIn: '1h' },
+    );
+    const req = buildRequest(`Bearer ${token}`);
+
+    expect(() => service.authenticateRequest(req)).toThrow(UnauthorizedException);
+  });
+
+  it('rejects malformed bearer header (no token after prefix)', () => {
+    const { service } = createService();
+    const req = buildRequest('Bearer ');
+
+    expect(() => service.authenticateRequest(req)).toThrow(UnauthorizedException);
+  });
+
+  // ── authenticateSocket negative path ──────────────────────────────
+
+  it('rejects socket when no token and bypass disabled', () => {
+    const { service } = createService();
+    const client = buildSocket({});
+
+    expect(() => service.authenticateSocket(client)).toThrow(UnauthorizedException);
+  });
+
+  // ── refreshSession negative paths ─────────────────────────────────
+
+  it('rejects refresh when session not found', async () => {
+    const { service, prisma } = createService();
+    const sessionId = '77777777-7777-4777-8777-777777777777';
+    const refreshToken = sign(
+      { sub: DEV_USER_ID, sid: sessionId, type: 'refresh' },
+      process.env.JWT_REFRESH_SECRET as string,
+      { algorithm: 'HS256', expiresIn: '1h' },
+    );
+    prisma.authSession.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.refreshSession(refreshToken, { ipAddress: '127.0.0.1', userAgent: 'jest' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects refresh when session belongs to different user', async () => {
+    const { service, prisma } = createService();
+    const sessionId = '88888888-8888-4888-8888-888888888888';
+    const refreshToken = sign(
+      { sub: DEV_USER_ID, sid: sessionId, type: 'refresh' },
+      process.env.JWT_REFRESH_SECRET as string,
+      { algorithm: 'HS256', expiresIn: '1h' },
+    );
+    prisma.authSession.findUnique.mockResolvedValue({
+      id: sessionId,
+      userId: ALT_USER_ID,
+      tokenHash: 'irrelevant',
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    await expect(
+      service.refreshSession(refreshToken, { ipAddress: '127.0.0.1', userAgent: 'jest' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects refresh token signed with wrong secret', async () => {
+    const { service } = createService();
+    const refreshToken = sign(
+      { sub: DEV_USER_ID, sid: '99999999-9999-4999-8999-999999999999', type: 'refresh' },
+      'wrong_refresh_secret_1234567890',
+      { algorithm: 'HS256', expiresIn: '1h' },
+    );
+
+    await expect(
+      service.refreshSession(refreshToken, { ipAddress: '127.0.0.1', userAgent: 'jest' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  // ── loginDev negative paths ───────────────────────────────────────
+
+  it('loginDev blocks in production', async () => {
+    const { service } = createService();
+    process.env.NODE_ENV = 'production';
+
+    await expect(
+      service.loginDev(
+        { userId: DEV_USER_ID, email: 'dev@test.com', name: 'Dev' },
+        { ipAddress: '127.0.0.1' },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('loginDev rejects non-UUID userId', async () => {
+    const { service } = createService();
+
+    await expect(
+      service.loginDev(
+        { userId: 'not-a-uuid', email: 'dev@test.com' },
+        { ipAddress: '127.0.0.1' },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  // ── dev bypass edge case ──────────────────────────────────────────
+
+  it('rejects dev bypass when DEV_USER_ID is invalid non-UUID', () => {
+    const { service } = createService();
+    process.env.ALLOW_DEV_AUTH_BYPASS = 'true';
+    process.env.DEV_USER_ID = 'bad-value';
+    const req = buildRequest(undefined);
+
+    expect(() => service.authenticateRequest(req)).toThrow(UnauthorizedException);
+  });
 });

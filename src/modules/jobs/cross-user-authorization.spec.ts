@@ -27,27 +27,46 @@ describe('Cross-user authorization -- JobsService', () => {
       ),
     };
 
+    const pipelineLifecycleService = {
+      startPipeline: jest.fn().mockResolvedValue([{ id: 'job-1', projectId: PROJECT_ID }]),
+    };
+    const pipelineStatusService = {
+      getPipelineStatus: jest.fn().mockResolvedValue({
+        projectId: PROJECT_ID,
+        status: 'success',
+        jobs: [],
+      }),
+    };
+    const pipelineCancellationService = {
+      cancelPipeline: jest.fn().mockResolvedValue(undefined),
+    };
     const stub = {} as any;
     const service = new JobsService(
       jobCrudService as any,  // jobCrudService
-      stub,                   // pipelineLifecycleService
+      pipelineLifecycleService as any,
       stub,                   // pipelineDispatchCoordinatorService
-      stub,                   // pipelineStatusService
-      stub,                   // pipelineCancellationService
+      pipelineStatusService as any,
+      pipelineCancellationService as any,
       stub,                   // jobStateService
       stub,                   // styleLoraService
     );
-    return { service, jobCrudService };
+    return {
+      service,
+      jobCrudService,
+      pipelineLifecycleService,
+      pipelineStatusService,
+      pipelineCancellationService,
+    };
   };
 
   // -- startPipelineForUser --
 
   it('User A passes ownership on startPipelineForUser', async () => {
-    const { service } = createService();
-    // Ownership passes; startPipeline will fail on stub but not with 404
-    await expect(
-      service.startPipelineForUser(PROJECT_ID, USER_A),
-    ).rejects.not.toBeInstanceOf(NotFoundException);
+    const { service, pipelineLifecycleService } = createService();
+    await expect(service.startPipelineForUser(PROJECT_ID, USER_A)).resolves.toEqual([
+      { id: 'job-1', projectId: PROJECT_ID },
+    ]);
+    expect(pipelineLifecycleService.startPipeline).toHaveBeenCalledTimes(1);
   });
 
   it('User B gets NotFoundException on startPipelineForUser', async () => {
@@ -60,10 +79,13 @@ describe('Cross-user authorization -- JobsService', () => {
   // -- getPipelineStatusForUser --
 
   it('User A passes ownership on getPipelineStatusForUser', async () => {
-    const { service } = createService();
-    await expect(
-      service.getPipelineStatusForUser(PROJECT_ID, USER_A),
-    ).rejects.not.toBeInstanceOf(NotFoundException);
+    const { service, pipelineStatusService } = createService();
+    await expect(service.getPipelineStatusForUser(PROJECT_ID, USER_A)).resolves.toEqual({
+      projectId: PROJECT_ID,
+      status: 'success',
+      jobs: [],
+    });
+    expect(pipelineStatusService.getPipelineStatus).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('User B gets NotFoundException on getPipelineStatusForUser', async () => {
@@ -76,10 +98,9 @@ describe('Cross-user authorization -- JobsService', () => {
   // -- cancelPipelineForUser --
 
   it('User A passes ownership on cancelPipelineForUser', async () => {
-    const { service } = createService();
-    await expect(
-      service.cancelPipelineForUser(PROJECT_ID, USER_A),
-    ).rejects.not.toBeInstanceOf(NotFoundException);
+    const { service, pipelineCancellationService } = createService();
+    await expect(service.cancelPipelineForUser(PROJECT_ID, USER_A)).resolves.toBeUndefined();
+    expect(pipelineCancellationService.cancelPipeline).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('User B gets NotFoundException on cancelPipelineForUser', async () => {

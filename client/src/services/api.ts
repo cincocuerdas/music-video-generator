@@ -17,17 +17,20 @@ let refreshInFlight: Promise<string | null> | null = null;
 
 const refreshAccessToken = async (): Promise<string | null> => {
     const refreshToken = getRefreshToken();
-    if (!refreshToken) {
-        clearAuthToken();
-        return null;
-    }
 
     if (!refreshInFlight) {
         refreshInFlight = axios
-            .post('/api/v1/auth/refresh', { refreshToken })
+            .post(
+                '/api/v1/auth/refresh',
+                refreshToken ? { refreshToken } : {},
+                { withCredentials: true },
+            )
             .then((response) => {
-                const accessToken = response.data?.accessToken as string | undefined;
-                const nextRefreshToken = response.data?.refreshToken as string | undefined;
+                const payload = unwrapData(response.data) as
+                    | { accessToken?: string; refreshToken?: string }
+                    | undefined;
+                const accessToken = payload?.accessToken;
+                const nextRefreshToken = payload?.refreshToken;
                 if (!accessToken) {
                     clearAuthToken();
                     return null;

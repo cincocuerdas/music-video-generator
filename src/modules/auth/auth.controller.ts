@@ -5,11 +5,13 @@ import {
   HttpCode,
   Post,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import {
   ApiEnvelopeCreatedResponse,
   ApiEnvelopeDefaultErrorResponses,
@@ -26,6 +28,10 @@ import { LogoutDto } from './dto/logout.dto';
 @ApiTags('auth')
 @ApiEnvelopeDefaultErrorResponses()
 export class AuthController {
+  private readonly refreshCookieName =
+    (process.env.AUTH_REFRESH_COOKIE_NAME || 'mvg_refresh_token').trim() ||
+    'mvg_refresh_token';
+
   constructor(private readonly authService: AuthService) {}
 
   @Post('dev-token')
@@ -40,11 +46,17 @@ export class AuthController {
   @Throttle(THROTTLE_RULES.authLoginDev)
   @ApiOperation({ summary: 'Login with development identity and issue session tokens' })
   @ApiEnvelopeCreatedResponse('Development session created')
-  loginDev(@Req() req: AuthenticatedRequest, @Body() dto: LoginDevDto) {
-    return this.authService.loginDev(dto, {
+  async loginDev(
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Response,
+    @Body() dto: LoginDevDto,
+  ) {
+    const result = await this.authService.loginDev(dto, {
       ipAddress: req.ip,
       userAgent: req.header('user-agent') || undefined,
     });
+    this.setRefreshCookie(res, result.refreshToken);
+    return this.withoutRefreshToken(result);
   }
 
   @Post('refresh')
@@ -52,11 +64,18 @@ export class AuthController {
   @Throttle(THROTTLE_RULES.authRefresh)
   @ApiOperation({ summary: 'Refresh access token' })
   @ApiEnvelopeOkResponse('Access token refreshed')
-  refresh(@Req() req: AuthenticatedRequest, @Body() dto: RefreshTokenDto) {
-    return this.authService.refreshSession(dto.refreshToken, {
+  async refresh(
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Response,
+    @Body() dto: RefreshTokenDto,
+  ) {
+    const refreshToken = this.resolveRefreshToken(req, dto.refreshToken);
+    const result = await this.authService.refreshSession(refreshToken, {
       ipAddress: req.ip,
       userAgent: req.header('user-agent') || undefined,
     });
+    this.setRefreshCookie(res, result.refreshToken);
+    return this.withoutRefreshToken(result);
   }
 
   @Post('logout')
@@ -64,8 +83,15 @@ export class AuthController {
   @Throttle(THROTTLE_RULES.authLogout)
   @ApiOperation({ summary: 'Revoke refresh token and logout session' })
   @ApiEnvelopeOkResponse('Session revoked')
-  logout(@Body() dto: LogoutDto) {
-    return this.authService.logout(dto.refreshToken);
+  async logout(
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Response,
+    @Body() dto: LogoutDto,
+  ) {
+    const refreshToken = this.resolveRefreshToken(req, dto.refreshToken);
+    const result = await this.authService.logout(refreshToken);
+    this.clearRefreshCookie(res);
+    return result;
   }
 
   @Get('me')
@@ -81,5 +107,76 @@ export class AuthController {
       userId,
       claims: req.user?.claims ?? {},
     };
+  }
+
+  private resolveRefreshToken(
+    req: AuthenticatedRequest,
+    bodyToken?: string,
+  ): string {
+    const normalizedBodyToken = typeof bodyToken === 'string' ? bodyToken.trim() : '';
+    if (normalizedBodyToken) {
+      return normalizedBodyToken;
+    }
+
+    const cookies = this.parseCookieHeader(req.header('cookie'));
+    return cookies[this.refreshCookieName] || '';
+  }
+
+  private parseCookieHeader(cookieHeader?: string): Record<string, string> {
+    if (!cookieHeader) {
+      return {};
+    }
+
+    return cookieHeader.split(';').reduce<Record<string, string>>((acc, pair) => {
+      const separatorIndex = pair.indexOf('=');
+      if (separatorIndex <= 0) {
+        return acc;
+      }
+
+      const key = pair.slice(0, separatorIndex).trim();
+      const value = pair.slice(separatorIndex + 1).trim();
+      if (!key) {
+        return acc;
+      }
+
+      acc[key] = decodeURIComponent(value);
+      return acc;
+    }, {});
+  }
+
+  private setRefreshCookie(res: Response, refreshToken: string): void {
+    res.cookie(this.refreshCookieName, refreshToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: this.isSecureCookieEnabled(),
+      path: '/api/v1/auth',
+    });
+  }
+
+  private clearRefreshCookie(res: Response): void {
+    res.clearCookie(this.refreshCookieName, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: this.isSecureCookieEnabled(),
+      path: '/api/v1/auth',
+    });
+  }
+
+  private isSecureCookieEnabled(): boolean {
+    const raw = process.env.AUTH_REFRESH_COOKIE_SECURE?.trim().toLowerCase();
+    if (raw === 'true') {
+      return true;
+    }
+    if (raw === 'false') {
+      return false;
+    }
+    return (process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+  }
+
+  private withoutRefreshToken<T extends { refreshToken?: string }>(
+    payload: T,
+  ): Omit<T, 'refreshToken'> {
+    const { refreshToken: _refreshToken, ...safePayload } = payload;
+    return safePayload;
   }
 }

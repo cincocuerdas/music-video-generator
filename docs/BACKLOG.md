@@ -1,4 +1,7 @@
-﻿# Feature Backlog
+# Feature Backlog
+
+> Execution priority lives in `docs/next-3-milestones.md`.
+> `BACKLOG.md` is for future capabilities and longer-horizon work.
 
 ## Futuras Features
 

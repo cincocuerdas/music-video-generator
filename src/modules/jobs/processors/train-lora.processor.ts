@@ -9,6 +9,7 @@ import { CircuitBreakerService, PythonRunnerService } from '../../../common/serv
 import type { TrainLoraResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
+import { JobConcurrencyService } from '../services/job-concurrency.service';
 import {
   assessScriptResult,
   buildRetryCurrentStep,
@@ -31,6 +32,7 @@ export class TrainLoraProcessor extends WorkerHost {
     private readonly pythonRunnerService: PythonRunnerService,
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
+    private readonly jobConcurrencyService: JobConcurrencyService,
     private readonly sentryService: SentryService,
   ) {
     super();
@@ -80,9 +82,13 @@ export class TrainLoraProcessor extends WorkerHost {
         throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
       }
 
-      const result = await this.pythonRunnerService.runScript<TrainLoraResult>('train_style_lora.py', [
-        style,
-      ]);
+      const result = await this.jobConcurrencyService.runWithLimits(
+        JobType.TRAIN_LORA,
+        () =>
+          this.pythonRunnerService.runScript<TrainLoraResult>('train_style_lora.py', [
+            style,
+          ]),
+      );
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {
         throw new Error(assessment.message || 'train_style_lora.py returned failed status');

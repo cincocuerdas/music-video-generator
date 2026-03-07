@@ -9,6 +9,7 @@ import { CircuitBreakerService, PythonRunnerService } from '../../../common/serv
 import type { VideoRenderResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
+import { JobConcurrencyService } from '../services/job-concurrency.service';
 import {
   assessScriptResult,
   buildRetryCurrentStep,
@@ -35,6 +36,7 @@ export class VideoRenderProcessor extends WorkerHost {
     private readonly pythonRunnerService: PythonRunnerService,
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
+    private readonly jobConcurrencyService: JobConcurrencyService,
     private readonly sentryService: SentryService,
   ) {
     super();
@@ -90,7 +92,10 @@ export class VideoRenderProcessor extends WorkerHost {
         throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
       }
 
-      const result = await this.pythonRunnerService.runScript<VideoRenderResult>('render_video.py', [projectId]);
+      const result = await this.jobConcurrencyService.runWithLimits(
+        JobType.RENDER_VIDEO,
+        () => this.pythonRunnerService.runScript<VideoRenderResult>('render_video.py', [projectId]),
+      );
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {
         throw new Error(assessment.message || 'render_video.py returned failed status');

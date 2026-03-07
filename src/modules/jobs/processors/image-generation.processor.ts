@@ -11,6 +11,7 @@ import type { ImageGenerationResult } from '../../../common/services/python-runn
 import { EventsGateway } from '../../events';
 import { ProjectsService } from '../../projects/projects.service';
 import { SentryService } from '../../observability';
+import { JobConcurrencyService } from '../services/job-concurrency.service';
 import {
   assessScriptResult,
   buildRetryCurrentStep,
@@ -34,6 +35,7 @@ export class ImageGenerationProcessor extends WorkerHost {
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
     private readonly projectsService: ProjectsService,
+    private readonly jobConcurrencyService: JobConcurrencyService,
     private readonly sentryService: SentryService,
   ) {
     super();
@@ -81,36 +83,40 @@ export class ImageGenerationProcessor extends WorkerHost {
         );
       }
 
-      const result = await this.pythonRunner.runScriptWithProgress<ImageGenerationResult>(
-        'generate_images.py',
-        [projectId, jobId, optimizationArg],
-        (event: ProgressEvent) => {
-          // Debug: Log every event received from Python script
-          this.logger.debug(`${trace.prefix} event received: type=${event.type}, data=${JSON.stringify(event.data)}`);
+      const result = await this.jobConcurrencyService.runWithLimits(
+        JobType.GENERATE_IMAGES,
+        () =>
+          this.pythonRunner.runScriptWithProgress<ImageGenerationResult>(
+            'generate_images.py',
+            [projectId, jobId, optimizationArg],
+            (event: ProgressEvent) => {
+              // Debug: Log every event received from Python script
+              this.logger.debug(`${trace.prefix} event received: type=${event.type}, data=${JSON.stringify(event.data)}`);
 
-          // Emit real-time events via WebSocket
-          if (event.type === 'image_generated') {
-            this.logger.debug(`${trace.prefix} image generated: scene ${event.data.sceneIndex}/${event.data.totalScenes}`);
-            this.eventsGateway.emitImageGenerated(projectId, event.data);
-          } else if (event.type === 'progress') {
-            const progress = event.data.progress || 0;
-            const message = event.data.message || 'Generating images...';
-            this.logger.debug(`${trace.prefix} progress ${progress}% - ${message}`);
+              // Emit real-time events via WebSocket
+              if (event.type === 'image_generated') {
+                this.logger.debug(`${trace.prefix} image generated: scene ${event.data.sceneIndex}/${event.data.totalScenes}`);
+                this.eventsGateway.emitImageGenerated(projectId, event.data);
+              } else if (event.type === 'progress') {
+                const progress = event.data.progress || 0;
+                const message = event.data.message || 'Generating images...';
+                this.logger.debug(`${trace.prefix} progress ${progress}% - ${message}`);
 
-            // Update progress and emit in a single shared helper.
-            updateProgressAndEmit({
-              jobsService: this.jobsService,
-              eventsGateway: this.eventsGateway,
-              jobId,
-              projectId,
-              jobType: JobType.GENERATE_IMAGES,
-              progress,
-              currentStep: message,
-            }).catch(err => {
-              this.logger.warn(`${trace.prefix} failed to update DB progress: ${err.message}`);
-            });
-          }
-        },
+                // Update progress and emit in a single shared helper.
+                updateProgressAndEmit({
+                  jobsService: this.jobsService,
+                  eventsGateway: this.eventsGateway,
+                  jobId,
+                  projectId,
+                  jobType: JobType.GENERATE_IMAGES,
+                  progress,
+                  currentStep: message,
+                }).catch(err => {
+                  this.logger.warn(`${trace.prefix} failed to update DB progress: ${err.message}`);
+                });
+              }
+            },
+          ),
       );
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {

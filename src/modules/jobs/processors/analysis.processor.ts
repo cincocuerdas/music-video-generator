@@ -9,6 +9,7 @@ import { CircuitBreakerService, PythonRunnerService } from '../../../common/serv
 import type { LyricsAnalysisResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
+import { JobConcurrencyService } from '../services/job-concurrency.service';
 import {
   assessScriptResult,
   buildRetryCurrentStep,
@@ -33,6 +34,7 @@ export class AnalysisProcessor extends WorkerHost {
     private readonly pythonRunnerService: PythonRunnerService,
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly eventsGateway: EventsGateway,
+    private readonly jobConcurrencyService: JobConcurrencyService,
     private readonly sentryService: SentryService,
   ) {
     super();
@@ -85,7 +87,10 @@ export class AnalysisProcessor extends WorkerHost {
         throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
       }
 
-      const result = await this.pythonRunnerService.runScript<LyricsAnalysisResult>('analyze_lyrics.py', [projectId]);
+      const result = await this.jobConcurrencyService.runWithLimits(
+        JobType.ANALYZE_LYRICS,
+        () => this.pythonRunnerService.runScript<LyricsAnalysisResult>('analyze_lyrics.py', [projectId]),
+      );
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {
         throw new Error(assessment.message || 'analyze_lyrics.py returned failed status');

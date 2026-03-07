@@ -9,6 +9,7 @@ import { CircuitBreakerService, PythonRunnerService } from '../../../common/serv
 import type { TranscriptionResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
+import { JobConcurrencyService } from '../services/job-concurrency.service';
 import {
     assessScriptResult,
     buildRetryCurrentStep,
@@ -28,11 +29,12 @@ export class TranscriptionProcessor extends WorkerHost {
     constructor(
         private readonly jobsService: JobsService,
         private readonly deadLetterOrchestrator: DeadLetterOrchestratorService,
-        private readonly pythonRunnerService: PythonRunnerService,
-        private readonly circuitBreaker: CircuitBreakerService,
-        private readonly eventsGateway: EventsGateway,
-        private readonly sentryService: SentryService,
-    ) {
+    private readonly pythonRunnerService: PythonRunnerService,
+    private readonly circuitBreaker: CircuitBreakerService,
+    private readonly eventsGateway: EventsGateway,
+    private readonly jobConcurrencyService: JobConcurrencyService,
+    private readonly sentryService: SentryService,
+  ) {
         super();
     }
 
@@ -78,58 +80,62 @@ export class TranscriptionProcessor extends WorkerHost {
                 );
             }
 
-            let reportedProgress = 10;
-            const result = await this.pythonRunnerService.runScriptWithProgress<TranscriptionResult>(
-                'transcribe_audio.py',
-                [projectId],
-                (event) => {
-                    if (event.type !== 'progress') {
-                        return;
-                    }
+      let reportedProgress = 10;
+      const result = await this.jobConcurrencyService.runWithLimits(
+        JobType.TRANSCRIPTION,
+        () =>
+          this.pythonRunnerService.runScriptWithProgress<TranscriptionResult>(
+            'transcribe_audio.py',
+            [projectId],
+            (event) => {
+              if (event.type !== 'progress') {
+                return;
+              }
 
-                    const rawMessage =
-                        typeof event.data === 'string'
-                            ? event.data
-                            : event.data?.message || '';
-                    const message = String(rawMessage || 'Transcribing audio with Whisper...').trim();
-                    if (!message) {
-                        return;
-                    }
+              const rawMessage =
+                typeof event.data === 'string'
+                  ? event.data
+                  : event.data?.message || '';
+              const message = String(rawMessage || 'Transcribing audio with Whisper...').trim();
+              if (!message) {
+                return;
+              }
 
-                    const segmentMatch = message.match(/transcribed\s+(\d+)\s+segments/i);
-                    let nextProgress = reportedProgress;
-                    if (segmentMatch) {
-                        const segments = Number(segmentMatch[1]);
-                        if (Number.isFinite(segments)) {
-                            // Gradual fill from 10% to 95% as segments increase.
-                            nextProgress = Math.min(95, Math.max(15, 10 + Math.floor(segments * 2)));
-                        }
-                    } else {
-                        nextProgress = Math.min(95, reportedProgress + 1);
-                    }
+              const segmentMatch = message.match(/transcribed\s+(\d+)\s+segments/i);
+              let nextProgress = reportedProgress;
+              if (segmentMatch) {
+                const segments = Number(segmentMatch[1]);
+                if (Number.isFinite(segments)) {
+                  // Gradual fill from 10% to 95% as segments increase.
+                  nextProgress = Math.min(95, Math.max(15, 10 + Math.floor(segments * 2)));
+                }
+              } else {
+                nextProgress = Math.min(95, reportedProgress + 1);
+              }
 
-                    if (nextProgress <= reportedProgress) {
-                        return;
-                    }
-                    reportedProgress = nextProgress;
+              if (nextProgress <= reportedProgress) {
+                return;
+              }
+              reportedProgress = nextProgress;
 
-                    updateProgressAndEmit({
-                        jobsService: this.jobsService,
-                        eventsGateway: this.eventsGateway,
-                        jobId,
-                        projectId,
-                        jobType: JobType.TRANSCRIPTION,
-                        progress: nextProgress,
-                        currentStep: message,
-                    }).catch((err) => {
-                        this.logger.warn(
-                            `${trace.prefix} failed to persist transcription progress: ${
-                                err instanceof Error ? err.message : String(err)
-                            }`,
-                        );
-                    });
-                },
-            );
+              updateProgressAndEmit({
+                jobsService: this.jobsService,
+                eventsGateway: this.eventsGateway,
+                jobId,
+                projectId,
+                jobType: JobType.TRANSCRIPTION,
+                progress: nextProgress,
+                currentStep: message,
+              }).catch((err) => {
+                this.logger.warn(
+                  `${trace.prefix} failed to persist transcription progress: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              });
+            },
+          ),
+      );
             const assessment = assessScriptResult(result);
             if (assessment.normalizedStatus === 'failed') {
                 throw new Error(assessment.message || 'transcribe_audio.py returned failed status');

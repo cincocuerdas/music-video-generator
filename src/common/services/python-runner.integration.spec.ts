@@ -1,16 +1,23 @@
 import { PythonRunnerService } from './python-runner.service';
 
 describe('PythonRunnerService RESULT_JSON contract', () => {
-  const configService = {
-    get: (key: string) => {
-      if (key === 'PYTHON_PATH') {
-        return process.env.PYTHON_PATH || 'python';
-      }
-      return undefined;
-    },
-  } as any;
+  const createService = () =>
+    new PythonRunnerService({
+      get: (key: string) => {
+        if (key === 'PYTHON_PATH') {
+          return process.env.PYTHON_PATH || 'python';
+        }
+        if (key === 'PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS') {
+          return process.env.PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS;
+        }
+        if (key === 'PYTHON_RUNNER_STDERR_BUFFER_MAX_CHARS') {
+          return process.env.PYTHON_RUNNER_STDERR_BUFFER_MAX_CHARS;
+        }
+        return undefined;
+      },
+    } as any);
 
-  const service = new PythonRunnerService(configService);
+  const service = createService();
   let loggerSpies: jest.SpyInstance[] = [];
 
   beforeAll(() => {
@@ -61,5 +68,34 @@ describe('PythonRunnerService RESULT_JSON contract', () => {
       source: 'explicit',
       selected: 'valid',
     });
+  });
+
+  it('truncates oversized stdout buffers instead of retaining the full output in memory', async () => {
+    process.env.PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS = '120';
+    const truncatingService = createService();
+
+    const result = await truncatingService.runScript<{ rawOutput: string }>(
+      'dev-tools/python_runner_buffer_contract.py',
+      ['huge_stdout_raw'],
+    );
+
+    expect(result.rawOutput).toContain('[truncated ');
+    expect(result.rawOutput.length).toBeLessThanOrEqual(170);
+    delete process.env.PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS;
+  });
+
+  it('still prefers explicit RESULT_JSON even when stdout was truncated', async () => {
+    process.env.PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS = '120';
+    const truncatingService = createService();
+
+    const result = await truncatingService.runScript('dev-tools/python_runner_buffer_contract.py', [
+      'huge_stdout_then_result_json',
+    ]);
+
+    expect(result).toEqual({
+      source: 'explicit',
+      selected: 'buffer-safe',
+    });
+    delete process.env.PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS;
   });
 });

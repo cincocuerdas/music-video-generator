@@ -69,6 +69,10 @@ const createDeps = () => {
     }),
   };
 
+  const jobConcurrencyService = {
+    runWithLimits: jest.fn().mockImplementation(async (_jobType: JobType, work: () => Promise<unknown>) => work()),
+  };
+
   const sentryService = {
     captureException: jest.fn(),
   };
@@ -80,6 +84,7 @@ const createDeps = () => {
     circuitBreaker,
     eventsGateway,
     projectsService,
+    jobConcurrencyService,
     sentryService,
   };
 };
@@ -97,6 +102,7 @@ describe('Job processors smoke tests', () => {
       deps.pythonRunner as any,
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);
@@ -127,6 +133,7 @@ describe('Job processors smoke tests', () => {
       deps.pythonRunner as any,
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);
@@ -148,6 +155,7 @@ describe('Job processors smoke tests', () => {
       deps.pythonRunner as any,
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);
@@ -170,6 +178,7 @@ describe('Job processors smoke tests', () => {
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
       deps.projectsService as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);
@@ -192,6 +201,7 @@ describe('Job processors smoke tests', () => {
       deps.pythonRunner as any,
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);
@@ -221,6 +231,7 @@ describe('Job processors smoke tests', () => {
       deps.pythonRunner as any,
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);
@@ -246,6 +257,7 @@ describe('Job processors smoke tests', () => {
       deps.pythonRunner as any,
       deps.circuitBreaker as any,
       deps.eventsGateway as any,
+      deps.jobConcurrencyService as any,
       deps.sentryService as any,
     );
     mockWorker(processor);

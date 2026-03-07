@@ -32,6 +32,7 @@ import { DeadLetterQueryService } from './services/dead-letter-query.service';
 import { DeadLetterReplayService } from './services/dead-letter-replay.service';
 import { StyleLoraService } from './services/style-lora.service';
 import { PipelineCancellationService } from './services/pipeline-cancellation.service';
+import { JobConcurrencyService } from './services/job-concurrency.service';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { PipelineCancellationService } from './services/pipeline-cancellation.se
     PipelineLifecycleService,
     PipelineStartReconciliationService,
     PipelineCancellationService,
+    JobConcurrencyService,
     StyleLoraService,
     JobDispatchService,
     JobCrudService,

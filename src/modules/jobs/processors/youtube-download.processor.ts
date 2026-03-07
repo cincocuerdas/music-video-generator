@@ -9,6 +9,7 @@ import { CircuitBreakerService, PythonRunnerService } from '../../../common/serv
 import type { YouTubeDownloadResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
+import { JobConcurrencyService } from '../services/job-concurrency.service';
 import {
     assessScriptResult,
     buildRetryCurrentStep,
@@ -31,6 +32,7 @@ export class YouTubeDownloadProcessor extends WorkerHost {
         private readonly pythonRunnerService: PythonRunnerService,
         private readonly circuitBreaker: CircuitBreakerService,
         private readonly eventsGateway: EventsGateway,
+        private readonly jobConcurrencyService: JobConcurrencyService,
         private readonly sentryService: SentryService,
     ) {
         super();
@@ -60,60 +62,64 @@ export class YouTubeDownloadProcessor extends WorkerHost {
                 'Starting YouTube download...',
             );
 
-            await updateProgressAndEmit({
-                jobsService: this.jobsService,
-                eventsGateway: this.eventsGateway,
-                jobId,
-                projectId,
-                jobType: JobType.YOUTUBE_DOWNLOAD,
-                progress: 10,
-                currentStep: 'Downloading audio from YouTube...',
-            });
-
-            const circuitDecision = this.circuitBreaker.canExecute(circuitKey);
-            if (!circuitDecision.allowed) {
-                throw new Error(
-                    `Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`,
-                );
-            }
-
-            // Call Python script to download audio and thumbnail
-            const result = await this.pythonRunnerService.runScript<YouTubeDownloadResult>('youtube_download.py', [projectId]);
-            const assessment = assessScriptResult(result);
-
-            if (assessment.normalizedStatus === 'failed') {
-                throw new Error(assessment.message || 'youtube_download.py returned failed status');
-            }
-            if (assessment.normalizedStatus === 'unknown' && assessment.rawStatus) {
-                this.logger.warn(
-                    `${trace.prefix} script returned non-standard status "${assessment.rawStatus}", treating as success`,
-                );
-            }
-
-            const completionStep =
-                assessment.normalizedStatus === 'degraded'
-                    ? `Download completed with fallback${assessment.message ? `: ${assessment.message}` : ''}`
-                    : 'Download complete';
-
-            this.logger.log(`${trace.prefix} script completed successfully`);
-            if (assessment.normalizedStatus === 'degraded') {
-                this.logger.warn(
-                    `${trace.prefix} script completed in DEGRADED mode: ${assessment.message || 'fallback output used'}`,
-                );
-            }
-            await this.jobsService.updateProgress(jobId, 100, completionStep);
-            await this.jobsService.markAsCompleted(jobId, result);
-            this.circuitBreaker.recordSuccess(circuitKey);
-
-            emitCompletedUpdate(
-                this.eventsGateway,
-                projectId,
+            const result = await this.jobConcurrencyService.runWithLimits(
                 JobType.YOUTUBE_DOWNLOAD,
-                `${completionStep}!`,
-            );
+                async () => {
+                    await updateProgressAndEmit({
+                        jobsService: this.jobsService,
+                        eventsGateway: this.eventsGateway,
+                        jobId,
+                        projectId,
+                        jobType: JobType.YOUTUBE_DOWNLOAD,
+                        progress: 10,
+                        currentStep: 'Downloading audio from YouTube...',
+                    });
 
-            // Advance to next job (transcription)
-            await this.jobsService.advancePipeline(projectId);
+                    const circuitDecision = this.circuitBreaker.canExecute(circuitKey);
+                    if (!circuitDecision.allowed) {
+                        throw new Error(
+                            `Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`,
+                        );
+                    }
+
+                    const scriptResult = await this.pythonRunnerService.runScript<YouTubeDownloadResult>('youtube_download.py', [projectId]);
+                    const assessment = assessScriptResult(scriptResult);
+
+                    if (assessment.normalizedStatus === 'failed') {
+                        throw new Error(assessment.message || 'youtube_download.py returned failed status');
+                    }
+                    if (assessment.normalizedStatus === 'unknown' && assessment.rawStatus) {
+                        this.logger.warn(
+                            `${trace.prefix} script returned non-standard status "${assessment.rawStatus}", treating as success`,
+                        );
+                    }
+
+                    const completionStep =
+                        assessment.normalizedStatus === 'degraded'
+                            ? `Download completed with fallback${assessment.message ? `: ${assessment.message}` : ''}`
+                            : 'Download complete';
+
+                    this.logger.log(`${trace.prefix} script completed successfully`);
+                    if (assessment.normalizedStatus === 'degraded') {
+                        this.logger.warn(
+                            `${trace.prefix} script completed in DEGRADED mode: ${assessment.message || 'fallback output used'}`,
+                        );
+                    }
+                    await this.jobsService.updateProgress(jobId, 100, completionStep);
+                    await this.jobsService.markAsCompleted(jobId, scriptResult);
+                    this.circuitBreaker.recordSuccess(circuitKey);
+
+                    emitCompletedUpdate(
+                        this.eventsGateway,
+                        projectId,
+                        JobType.YOUTUBE_DOWNLOAD,
+                        `${completionStep}!`,
+                    );
+
+                    await this.jobsService.advancePipeline(projectId);
+                    return scriptResult;
+                },
+            );
 
             return result;
 

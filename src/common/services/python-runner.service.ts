@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'child_process';
 import * as path from 'path';
+import { parsePositiveIntEnv } from '../utils/env-parsers';
 import { toStructuredLog } from '../utils/structured-log.util';
 
 export interface ProgressEvent {
@@ -37,14 +38,58 @@ export function extractResultPayload(line: string): string | null {
   return stripped.substring(markerIndex + 'RESULT_JSON:'.length).trim();
 }
 
+class BoundedTextBuffer {
+  private buffer = '';
+  private truncatedChars = 0;
+
+  constructor(private readonly maxChars: number) {}
+
+  append(text: string): void {
+    if (!text) {
+      return;
+    }
+    this.buffer += text;
+    if (this.buffer.length > this.maxChars) {
+      const overflow = this.buffer.length - this.maxChars;
+      this.buffer = this.buffer.slice(overflow);
+      this.truncatedChars += overflow;
+    }
+  }
+
+  trim(): string {
+    return this.buffer.trim();
+  }
+
+  raw(): string {
+    return this.buffer;
+  }
+
+  withNotice(): string {
+    if (this.truncatedChars <= 0) {
+      return this.buffer;
+    }
+    return `[truncated ${this.truncatedChars} chars]\n${this.buffer}`;
+  }
+}
+
 @Injectable()
 export class PythonRunnerService {
   private readonly logger = new Logger(PythonRunnerService.name);
   private pythonPath: string;
   private readonly defaultTimeoutMs = 30 * 60 * 1000; // 30 min
+  private readonly stdoutBufferMaxChars: number;
+  private readonly stderrBufferMaxChars: number;
 
   constructor(private configService: ConfigService) {
     this.pythonPath = this.configService.get<string>('PYTHON_PATH') || 'python';
+    this.stdoutBufferMaxChars = parsePositiveIntEnv(
+      'PYTHON_RUNNER_STDOUT_BUFFER_MAX_CHARS',
+      1_000_000,
+    );
+    this.stderrBufferMaxChars = parsePositiveIntEnv(
+      'PYTHON_RUNNER_STDERR_BUFFER_MAX_CHARS',
+      1_000_000,
+    );
   }
 
   private resolveScriptTimeoutMs(scriptName: string): number {
@@ -95,8 +140,8 @@ export class PythonRunnerService {
       const pythonProcess = spawn(this.pythonPath, [scriptPath, ...args]);
       let settled = false;
 
-      let dataString = '';
-      let errorString = '';
+      const stdoutTail = new BoundedTextBuffer(this.stdoutBufferMaxChars);
+      const stderrTail = new BoundedTextBuffer(this.stderrBufferMaxChars);
       let stdoutBuffer = '';
       let stderrBuffer = '';
       let hasExplicitResult = false;
@@ -189,15 +234,18 @@ export class PythonRunnerService {
         isStdErr: boolean,
       ) => {
         const chunkText = chunk.toString();
-        if (isStdErr) {
-          stderrBuffer += chunkText;
-        } else {
-          stdoutBuffer += chunkText;
-        }
-
-        const activeBuffer = isStdErr ? stderrBuffer : stdoutBuffer;
+        const activeBuffer = (isStdErr ? stderrBuffer : stdoutBuffer) + chunkText;
         const lines = activeBuffer.split(/\r?\n/);
-        const trailing = lines.pop() ?? '';
+        let trailing = lines.pop() ?? '';
+
+        const trailingLimit = isStdErr
+          ? this.stderrBufferMaxChars
+          : this.stdoutBufferMaxChars;
+        if (trailing.length > trailingLimit) {
+          const tailBuffer = isStdErr ? stderrTail : stdoutTail;
+          tailBuffer.append(trailing.slice(0, trailing.length - trailingLimit));
+          trailing = trailing.slice(trailing.length - trailingLimit);
+        }
 
         if (isStdErr) {
           stderrBuffer = trailing;
@@ -230,7 +278,7 @@ export class PythonRunnerService {
           }
 
           if (isStdErr) {
-            errorString += `${line}\n`;
+            stderrTail.append(`${line}\n`);
             this.logger.warn(
               toStructuredLog('python.run.stderr', {
                 scriptName,
@@ -238,7 +286,7 @@ export class PythonRunnerService {
               }),
             );
           } else {
-            dataString += `${line}\n`;
+            stdoutTail.append(`${line}\n`);
             this.logger.debug(
               toStructuredLog('python.run.stdout', {
                 scriptName,
@@ -266,7 +314,7 @@ export class PythonRunnerService {
 
         if (stdoutBuffer.trim()) {
           if (!maybeEmitProgress(stdoutBuffer) && !maybeCaptureResult(stdoutBuffer)) {
-            dataString += `${stdoutBuffer}\n`;
+            stdoutTail.append(`${stdoutBuffer}\n`);
             this.logger.debug(
               toStructuredLog('python.run.stdout.trailing', {
                 scriptName,
@@ -277,7 +325,7 @@ export class PythonRunnerService {
         }
         if (stderrBuffer.trim()) {
           if (!maybeEmitProgress(stderrBuffer) && !maybeCaptureResult(stderrBuffer)) {
-            errorString += `${stderrBuffer}\n`;
+            stderrTail.append(`${stderrBuffer}\n`);
             this.logger.warn(
               toStructuredLog('python.run.stderr.trailing', {
                 scriptName,
@@ -292,10 +340,10 @@ export class PythonRunnerService {
             toStructuredLog('python.run.failed', {
               scriptName,
               code,
-              error: errorString || 'Unknown error',
+              error: stderrTail.withNotice() || 'Unknown error',
             }),
           );
-          reject(new Error(`Script failed: ${errorString || 'Unknown error'}`));
+          reject(new Error(`Script failed: ${stderrTail.withNotice() || 'Unknown error'}`));
           return;
         }
 
@@ -305,20 +353,21 @@ export class PythonRunnerService {
             return;
           }
 
-          if (!dataString.trim()) {
+          if (!stdoutTail.trim()) {
             resolve({ message: 'Script finished without output' } as T);
             return;
           }
 
-          const jsonStartIndex = dataString.indexOf('{');
-          const jsonEndIndex = dataString.lastIndexOf('}');
+          const rawStdout = stdoutTail.raw();
+          const jsonStartIndex = rawStdout.indexOf('{');
+          const jsonEndIndex = rawStdout.lastIndexOf('}');
 
           if (jsonStartIndex !== -1 && jsonEndIndex !== -1) {
-            const jsonPart = dataString.substring(jsonStartIndex, jsonEndIndex + 1);
+            const jsonPart = rawStdout.substring(jsonStartIndex, jsonEndIndex + 1);
             const result = JSON.parse(jsonPart);
             resolve(result);
           } else {
-            resolve({ rawOutput: dataString } as T);
+            resolve({ rawOutput: stdoutTail.withNotice() } as T);
           }
 
         } catch (error) {
@@ -328,7 +377,7 @@ export class PythonRunnerService {
               error: error instanceof Error ? error.message : String(error),
             }),
           );
-          resolve({ rawOutput: dataString } as T);
+          resolve({ rawOutput: stdoutTail.withNotice() } as T);
         }
       });
 

@@ -155,6 +155,17 @@ async function isPortOpen(port) {
   });
 }
 
+async function waitForPortState(port, desiredOpen, attempts = 30, sleepMs = 200) {
+  for (let i = 0; i < attempts; i += 1) {
+    const open = await isPortOpen(port);
+    if (open === desiredOpen) {
+      return true;
+    }
+    await sleep(sleepMs);
+  }
+  return false;
+}
+
 async function apiRequestRaw(url, timeoutMs = 2000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -258,7 +269,7 @@ async function ensurePortAvailable(port, force) {
     const pid = await findPidUsingPortWindows(port);
     if (pid) {
       await killProcessTree(pid);
-      await sleep(800);
+      await waitForPortState(port, false, 25, 200);
       return;
     }
   }
@@ -282,6 +293,7 @@ async function commandUp(force) {
 
   const port = getAppPort();
   await ensurePortAvailable(port, force);
+  await waitForPortState(port, false, 10, 100);
   const entry = await ensureBackendBuild();
 
   const stdoutFd = fs.openSync(STDOUT_LOG, 'a');
@@ -329,6 +341,7 @@ async function commandDown() {
   }
 
   await killProcessTree(record.pid);
+  await waitForPortState(record.port || getAppPort(), false, 30, 200);
   removePidRecord();
   console.log(`status=stopped pid=${record.pid}`);
 }

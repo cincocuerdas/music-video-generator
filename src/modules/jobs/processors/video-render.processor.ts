@@ -94,7 +94,11 @@ export class VideoRenderProcessor extends WorkerHost {
 
       const result = await this.jobConcurrencyService.runWithLimits(
         JobType.RENDER_VIDEO,
-        () => this.pythonRunnerService.runScript<VideoRenderResult>('render_video.py', [projectId]),
+        () =>
+          this.pythonRunnerService.runScript<VideoRenderResult>('render_video.py', [
+            projectId,
+            jobId,
+          ]),
       );
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {

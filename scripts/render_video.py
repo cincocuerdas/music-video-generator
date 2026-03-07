@@ -18,6 +18,7 @@ from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_st
 from env_utils import parse_float_env, parse_positive_int_env
 from db_utils import get_db_connection
 from ffmpeg_utils import resolve_ffmpeg_path
+from idempotency_utils import load_receipt, save_receipt
 from runtime_config import build_placeholder_image_url, is_placeholder_url
 
 # Load configuration
@@ -88,6 +89,29 @@ def safe_save_video_url(project_id: str, video_url: str) -> str:
         return ""
     except Exception as e:
         return str(e)
+
+
+def existing_video_result(project_id: str, job_id: str | None) -> dict | None:
+    receipt = load_receipt("render_video", job_id)
+    if not receipt:
+        return None
+
+    output_path = receipt.get("outputPath")
+    if not isinstance(output_path, str) or not output_path or not os.path.exists(output_path):
+        return None
+
+    file_size = os.path.getsize(output_path)
+    if file_size <= 0:
+        return None
+
+    project_video_url = f"/output/videos/{project_id}.mp4"
+    save_warning = safe_save_video_url(project_id, project_video_url)
+    reused = dict(receipt)
+    reused["videoUrl"] = project_video_url
+    reused["fileSize"] = file_size
+    reused["idempotentReuse"] = True
+    reused["warning"] = save_warning or reused.get("warning")
+    return reused
 
 def build_safe_render_result(
     project_id: str,
@@ -251,7 +275,7 @@ def read_unexposed_fallback_threshold() -> float:
     """Read ratio threshold to relax exposed=false filtering when too many frames are blocked."""
     return max(0.0, min(1.0, parse_float_env("RENDER_UNEXPOSED_FALLBACK_THRESHOLD", 0.4)))
 
-def render_video(project_id: str, song_path: str = None, analysis_data: dict = None):
+def render_video(project_id: str, song_path: str = None, analysis_data: dict = None, job_id: str = None):
     """
     Main function to render video from generated images.
 
@@ -271,6 +295,10 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
     )
     try:
         ensure_stage_deadline(stage_deadline, "preflight")
+        reusable = existing_video_result(project_id, job_id)
+        if reusable:
+            emit_result(reusable)
+            return reusable
         # Check FFmpeg
         ffmpeg_available = check_ffmpeg()
         if not ffmpeg_available:
@@ -787,6 +815,8 @@ def render_video(project_id: str, song_path: str = None, analysis_data: dict = N
             }
             if not useful_output:
                 result["errorCode"] = "render_video.no_output_file"
+            if useful_output and job_id:
+                save_receipt("render_video", job_id, result)
 
             emit_result(result)
             return result
@@ -836,10 +866,11 @@ def _main():
         sys.exit(0)
 
     project_id = sys.argv[1]
+    job_id = sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2] else None
 
-    if len(sys.argv) >= 4:
-        song_path = sys.argv[2]
-        json_arg = sys.argv[3]
+    if len(sys.argv) >= 5:
+        song_path = sys.argv[3]
+        json_arg = sys.argv[4]
 
         if not os.path.isfile(song_path):
             print(f"Warning: Audio file not found: {song_path}. Continuing without audio.", file=sys.stderr)
@@ -861,10 +892,10 @@ def _main():
                 print(f"Warning: Failed to parse JSON string: {str(e)}. Using empty analysis.", file=sys.stderr)
                 analysis_data = {}
 
-        render_video(project_id, song_path, analysis_data)
+        render_video(project_id, song_path, analysis_data, job_id=job_id)
     else:
         print(f"Fetching project {project_id} from database", file=sys.stderr)
-        render_video(project_id)
+        render_video(project_id, job_id=job_id)
 
 
 if __name__ == "__main__":

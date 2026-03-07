@@ -87,6 +87,7 @@ export class TrainLoraProcessor extends WorkerHost {
         () =>
           this.pythonRunnerService.runScript<TrainLoraResult>('train_style_lora.py', [
             style,
+            jobId,
           ]),
       );
       const assessment = assessScriptResult(result);

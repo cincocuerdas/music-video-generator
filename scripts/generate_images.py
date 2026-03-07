@@ -20,6 +20,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from result_json import make_emit_result
 from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
+from idempotency_utils import load_receipt, save_receipt
 from env_utils import (
     parse_bool_env,
     parse_csv_env,
@@ -83,6 +84,32 @@ def get_db_connection():
 
 emit_result = make_emit_result("image_generation")
 ensure_stage_deadline = make_stage_deadline_checker("image_generation")
+
+
+def existing_images_result(job_id: str | None) -> dict | None:
+    receipt = load_receipt("generate_images", job_id)
+    if not receipt:
+        return None
+    images = receipt.get("images")
+    if not isinstance(images, list) or not images:
+        return None
+
+    for image in images:
+        if not isinstance(image, dict):
+            return None
+        image_url = image.get("imageUrl")
+        if not isinstance(image_url, str) or not image_url.strip():
+            return None
+        if is_placeholder_url(image_url):
+            continue
+        if image_url.startswith("/output/"):
+            local_path = os.path.join(root_dir, image_url.lstrip("/").replace("/", os.sep))
+            if not os.path.exists(local_path):
+                return None
+
+    reused = dict(receipt)
+    reused["idempotentReuse"] = True
+    return reused
 
 
 def sleep_with_deadline(seconds: float, deadline_ts: float | None, phase: str) -> None:
@@ -2684,6 +2711,7 @@ def generate_images():
             return fallback
 
         project_id = sys.argv[1]
+        job_id = sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2] else None
 
         # 🧠 AI LEARNING: Parse optimization from NestJS (arg 3)
         ai_optimization = {"qualityBoost": "", "negativeBoost": "", "confidence": 0}
@@ -2698,6 +2726,11 @@ def generate_images():
                         print(f"  🚫 Negative boost: {ai_optimization['negativeBoost']}", file=sys.stderr)
             except (json.JSONDecodeError, IndexError):
                 pass  # Use defaults if parsing fails
+
+        reusable = existing_images_result(job_id)
+        if reusable:
+            emit_result(reusable)
+            return reusable
 
         # Determine which provider to use
         # Available providers:
@@ -3376,6 +3409,7 @@ def generate_images():
             "exposureMetrics": exposure_metrics,
         }
 
+        save_receipt("generate_images", job_id, result)
         emit_result(result)
         return result
 

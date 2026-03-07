@@ -209,7 +209,7 @@ describe('Job processors smoke tests', () => {
     const result = await processor.process(createJob());
 
     expect(result).toEqual(okResult);
-    expect(deps.pythonRunner.runScript).toHaveBeenCalledWith('render_video.py', ['project-1']);
+    expect(deps.pythonRunner.runScript).toHaveBeenCalledWith('render_video.py', ['project-1', 'job-1']);
     expect(deps.jobsService.markAsCompleted).toHaveBeenCalledWith('job-1', okResult);
     expect(deps.jobsService.advancePipeline).toHaveBeenCalledWith('project-1');
     expect(deps.circuitBreaker.recordSuccess).toHaveBeenCalledWith('video-render');
@@ -239,7 +239,7 @@ describe('Job processors smoke tests', () => {
     const result = await processor.process(createJob({ style: 'cinematic' }));
 
     expect(result).toEqual(loraResult);
-    expect(deps.pythonRunner.runScript).toHaveBeenCalledWith('train_style_lora.py', ['cinematic']);
+    expect(deps.pythonRunner.runScript).toHaveBeenCalledWith('train_style_lora.py', ['cinematic', 'job-1']);
     expect(deps.jobsService.updateStyleLoraConfig).toHaveBeenCalledWith('cinematic', {
       loraFilename: 'style_cinematic_20260302.safetensors',
       loraPath: 'ComfyUI/models/loras/style_cinematic_20260302.safetensors',

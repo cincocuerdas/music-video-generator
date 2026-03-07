@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+from idempotency_utils import load_receipt, save_receipt
 from result_json import make_emit_result
 from stage_deadline import make_stage_deadline_checker
 from db_utils import get_db_connection
@@ -32,6 +33,18 @@ load_dotenv(dotenv_path)
 
 emit_result = make_emit_result("train_lora")
 ensure_stage_deadline = make_stage_deadline_checker("train_lora")
+
+
+def existing_train_result(job_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    receipt = load_receipt("train_lora", job_id)
+    if not receipt:
+        return None
+    lora_path = receipt.get("loraPath")
+    if not isinstance(lora_path, str) or not lora_path or not os.path.exists(lora_path):
+        return None
+    reused = dict(receipt)
+    reused["idempotentReuse"] = True
+    return reused
 
 def normalize_style(style: str) -> str:
     style = (style or "").strip().lower()
@@ -379,7 +392,12 @@ def main():
             return
 
         style_raw = sys.argv[1]
+        job_id = sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2] else None
         style_name = normalize_style(style_raw)
+        reusable = existing_train_result(job_id)
+        if reusable:
+            emit_result(reusable)
+            return
 
         ensure_stage_deadline(deadline_ts, "fetch_positive_feedback")
         feedback_rows = fetch_positive_feedback(style_raw)
@@ -443,6 +461,7 @@ def main():
             "networkAlpha": 16,
             "learningRate": 1e-4,
         }
+        save_receipt("train_lora", job_id, result)
         emit_result(result)
     except Exception as exc:
         emit_result({

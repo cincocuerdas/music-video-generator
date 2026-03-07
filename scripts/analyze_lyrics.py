@@ -9,6 +9,8 @@ import sys
 import json
 import os
 import re
+import shutil
+import subprocess
 import time
 import urllib.request
 import urllib.error
@@ -16,7 +18,7 @@ from typing import Any, Dict, List, Optional
 import random
 from result_json import make_emit_result
 from stage_deadline import bounded_timeout_seconds, hard_stage_deadline, make_stage_deadline_checker
-from env_utils import parse_int_env, parse_positive_int_env
+from env_utils import parse_bool_env, parse_int_env, parse_positive_int_env
 from gemini_semaphore import (
     backoff_with_jitter,
     call_with_gemini_guard,
@@ -50,6 +52,14 @@ ANALYSIS_PROMPT_TEMPLATE_PATH = os.path.join(current_dir, "templates", "analyze_
 _PROMPT_TEMPLATE_CACHE = None
 ANALYZE_LYRICS_STAGE_TIMEOUT_SEC = parse_positive_int_env("ANALYZE_LYRICS_STAGE_TIMEOUT_SEC", 240)
 MULTILINGUAL_HIGH_CONTEXT_LANGUAGES = {"ko", "ja", "zh"}
+SOURCE_CONTEXT_SUMMARY_ENABLED = parse_bool_env("SOURCE_CONTEXT_SUMMARY_ENABLED", True)
+SOURCE_CONTEXT_SUMMARY_MODEL = (
+    os.getenv("SOURCE_CONTEXT_SUMMARY_MODEL") or "google/gemini-2.5-flash"
+).strip()
+SOURCE_CONTEXT_SUMMARY_TIMEOUT_SEC = parse_positive_int_env("SOURCE_CONTEXT_SUMMARY_TIMEOUT_SEC", 60)
+SOURCE_CONTEXT_SUMMARY_MAX_CHARS = parse_positive_int_env("SOURCE_CONTEXT_SUMMARY_MAX_CHARS", 1200)
+SUMMARIZE_SOURCE_SCRIPT_PATH = os.path.join(root_dir, "scripts", "dev-tools", "summarize_source.js")
+SUMMARIES_OUTPUT_DIR = os.path.join(root_dir, "output", "summaries")
 
 
 def get_db_connection():
@@ -71,11 +81,17 @@ def load_analysis_prompt_template() -> str:
     return _PROMPT_TEMPLATE_CACHE
 
 
-def build_analysis_prompt(style_hint: str, title_hint: str, lyrics_content: str) -> str:
+def build_analysis_prompt(
+    style_hint: str,
+    title_hint: str,
+    lyrics_content: str,
+    source_context_hint: str,
+) -> str:
     template = load_analysis_prompt_template()
     return (
         template.replace("{{STYLE_HINT}}", style_hint)
         .replace("{{TITLE_HINT}}", title_hint)
+        .replace("{{SOURCE_CONTEXT_HINT}}", source_context_hint)
         .replace("{{LYRICS_CONTENT}}", lyrics_content)
     )
 
@@ -157,6 +173,206 @@ def to_reason_list(value: Any) -> List[str]:
     return []
 
 
+def summarize_text(text: str, max_chars: int) -> str:
+    value = re.sub(r"\s+", " ", (text or "").strip())
+    if len(value) <= max_chars:
+        return value
+    cutoff = value.rfind(". ", 0, max_chars)
+    if cutoff >= max(int(max_chars * 0.55), 120):
+        return value[: cutoff + 1].strip()
+    cutoff = max(value.rfind(", ", 0, max_chars), value.rfind(" ", 0, max_chars))
+    if cutoff >= max(int(max_chars * 0.55), 120):
+        return value[:cutoff].strip()
+    return value[:max_chars].strip()
+
+
+def extract_source_context_text(summary_envelope: Dict[str, Any]) -> str:
+    if not isinstance(summary_envelope, dict):
+        return ""
+    payload = summary_envelope.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+
+    summary_text = payload.get("summary")
+    if isinstance(summary_text, str) and summary_text.strip():
+        return summarize_text(summary_text, SOURCE_CONTEXT_SUMMARY_MAX_CHARS)
+
+    extracted = payload.get("extracted")
+    if isinstance(extracted, dict):
+        title_candidates = [
+            extracted.get("title"),
+            extracted.get("description"),
+            extracted.get("filename"),
+            extracted.get("source"),
+        ]
+        for candidate in title_candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return summarize_text(candidate, min(240, SOURCE_CONTEXT_SUMMARY_MAX_CHARS))
+
+    return ""
+
+
+def extract_source_context_summary_snippet(summary_envelope: Dict[str, Any]) -> str:
+    context_text = extract_source_context_text(summary_envelope)
+    if not context_text:
+        return ""
+    return summarize_text(context_text, min(240, SOURCE_CONTEXT_SUMMARY_MAX_CHARS))
+
+
+def extract_source_context_meta(summary_envelope: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(summary_envelope, dict):
+        return {}
+    payload = summary_envelope.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+
+    extracted = payload.get("extracted")
+    if not isinstance(extracted, dict):
+        return {}
+
+    meta: Dict[str, Any] = {}
+    title = extracted.get("title")
+    site_name = extracted.get("siteName")
+    transcript_source = extracted.get("transcriptSource")
+    duration_seconds = extracted.get("mediaDurationSeconds")
+
+    if isinstance(title, str) and title.strip():
+        meta["title"] = title.strip()
+    if isinstance(site_name, str) and site_name.strip():
+        meta["siteName"] = site_name.strip()
+    if isinstance(transcript_source, str) and transcript_source.strip():
+        meta["transcriptSource"] = transcript_source.strip()
+    if isinstance(duration_seconds, (int, float)):
+        meta["durationSeconds"] = int(duration_seconds)
+
+    return meta
+
+
+def build_source_context_hint(project: Dict[str, Any], context_text: str) -> str:
+    youtube_url = str(project.get("youtubeUrl") or "").strip()
+    if not context_text:
+        return (
+            "No supplemental source context provided. Base scene decisions on the lyrics, "
+            "timestamps, and song title only."
+        )
+    lines = [
+        "Supplemental source context is available for this project.",
+        "Use it only to disambiguate theme, recurring entities, settings, or mood.",
+        "If it conflicts with the lyrics or timestamps, obey the lyrics and timestamps.",
+    ]
+    if youtube_url:
+        lines.append(f"Source URL: {youtube_url}")
+    lines.append(f"Context summary: {context_text}")
+    return "\n".join(lines)
+
+
+def get_source_summary_output_path(project_id: str) -> str:
+    safe_project_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", project_id or "unknown")
+    os.makedirs(SUMMARIES_OUTPUT_DIR, exist_ok=True)
+    return os.path.join(SUMMARIES_OUTPUT_DIR, f"project_{safe_project_id}_source_context.json")
+
+
+def load_cached_source_context_envelope(project_id: str, youtube_url: str) -> Dict[str, Any]:
+    output_path = get_source_summary_output_path(project_id)
+    if not os.path.exists(output_path):
+        return {}
+    try:
+        with open(output_path, "r", encoding="utf-8") as f:
+            envelope = json.load(f)
+        cached_input = str(envelope.get("input") or "").strip()
+        if cached_input and cached_input != youtube_url:
+            return {}
+        return envelope
+    except Exception as exc:
+        print(f"Warning: Could not reuse cached source summary: {exc}", file=sys.stderr)
+        return {}
+
+
+def load_cached_source_context(project_id: str, youtube_url: str) -> str:
+    envelope = load_cached_source_context_envelope(project_id, youtube_url)
+    if not envelope:
+        return ""
+    return extract_source_context_text(envelope)
+
+
+def maybe_generate_source_context(
+    project: Dict[str, Any],
+    deadline_ts: Optional[float] = None,
+) -> str:
+    if not SOURCE_CONTEXT_SUMMARY_ENABLED:
+        return ""
+
+    project_id = str(project.get("id") or "").strip()
+    youtube_url = str(project.get("youtubeUrl") or "").strip()
+    if not project_id or not youtube_url:
+        return ""
+    if not os.path.exists(SUMMARIZE_SOURCE_SCRIPT_PATH):
+        print("Warning: summarize_source.js not found; skipping source context.", file=sys.stderr)
+        return ""
+
+    cached = load_cached_source_context(project_id, youtube_url)
+    if cached:
+        print("Using cached source context summary.", file=sys.stderr)
+        return cached
+
+    node_path = shutil.which("node")
+    if not node_path:
+        print("Warning: Node.js not available; skipping source context.", file=sys.stderr)
+        return ""
+
+    output_path = get_source_summary_output_path(project_id)
+    command = [
+        node_path,
+        SUMMARIZE_SOURCE_SCRIPT_PATH,
+        youtube_url,
+        "--mode",
+        "summary",
+        "--model",
+        SOURCE_CONTEXT_SUMMARY_MODEL,
+        "--out",
+        output_path,
+    ]
+    try:
+        effective_timeout = bounded_timeout_seconds(
+            deadline_ts,
+            SOURCE_CONTEXT_SUMMARY_TIMEOUT_SEC,
+            phase="source_context_summary",
+            scope="analysis",
+        )
+        result = subprocess.run(
+            command,
+            cwd=root_dir,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
+            check=True,
+        )
+        if result.stdout:
+            print(result.stdout.strip(), file=sys.stderr)
+        if result.stderr:
+            print(result.stderr.strip(), file=sys.stderr)
+        generated = load_cached_source_context(project_id, youtube_url)
+        if generated:
+            print("Source context summary generated successfully.", file=sys.stderr)
+        return generated
+    except subprocess.TimeoutExpired:
+        print(
+            f"Warning: Source context summary timed out after {SOURCE_CONTEXT_SUMMARY_TIMEOUT_SEC}s.",
+            file=sys.stderr,
+        )
+        return ""
+    except subprocess.CalledProcessError as exc:
+        stderr_text = (exc.stderr or exc.stdout or "").strip()
+        print(
+            f"Warning: Source context summary failed: {stderr_text[:400] or exc}",
+            file=sys.stderr,
+        )
+        return ""
+    except Exception as exc:
+        print(f"Warning: Could not generate source context: {exc}", file=sys.stderr)
+        return ""
+
+
 ensure_stage_deadline = make_stage_deadline_checker("analysis")
 
 def with_result_status(analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -184,7 +400,7 @@ def get_project_lyrics(project_id: str) -> dict:
         
         # Get project basic info
         cur.execute(
-            '''SELECT id, title, lyrics, "visualStyle", "colorPalette"
+            '''SELECT id, title, lyrics, "visualStyle", "colorPalette", "sourceMode", "youtubeUrl"
                FROM "Project" WHERE id = %s''',
             (project_id,)
         )
@@ -198,6 +414,8 @@ def get_project_lyrics(project_id: str) -> dict:
             "lyrics": row[2],
             "visualStyle": row[3],
             "colorPalette": row[4] if row[4] else [],
+            "sourceMode": row[5],
+            "youtubeUrl": row[6],
             "segments": []
         }
         
@@ -714,6 +932,7 @@ def analyze_with_gemini(
     api_key: str,
     segments: list = None,
     song_title: str = "",
+    source_context_hint: str = "",
     primary_language: str = "unknown",
     deadline_ts: Optional[float] = None,
 ) -> dict:
@@ -762,6 +981,7 @@ def analyze_with_gemini(
         style_hint if style_hint else "Use realistic photographic style with dramatic lighting",
         title_hint,
         lyrics_content,
+        source_context_hint,
     )
 
     if not candidate_models:
@@ -830,6 +1050,8 @@ def analyze_lyrics():
         "lyrics": "",
         "visualStyle": "",
         "colorPalette": [],
+        "sourceMode": "",
+        "youtubeUrl": "",
         "segments": []
     }
     project_id = ""
@@ -866,6 +1088,23 @@ def analyze_lyrics():
             language_source = segment_text
         detected_language = detect_primary_language(language_source)
         print(f"Language route detected: {detected_language}", file=sys.stderr)
+        source_context_text = ""
+        source_context_hint = "No supplemental source context provided. Base scene decisions on the lyrics, timestamps, and song title only."
+        source_context_snippet = ""
+        source_context_meta: Dict[str, Any] = {}
+
+        if project.get("youtubeUrl"):
+            ensure_stage_deadline(deadline_ts, "source_context")
+            source_context_text = maybe_generate_source_context(project, deadline_ts=deadline_ts)
+            source_context_hint = build_source_context_hint(project, source_context_text)
+            if source_context_text:
+                source_context_envelope = load_cached_source_context_envelope(
+                    str(project.get("id") or "").strip(),
+                    str(project.get("youtubeUrl") or "").strip(),
+                )
+                if source_context_envelope:
+                    source_context_snippet = extract_source_context_summary_snippet(source_context_envelope)
+                    source_context_meta = extract_source_context_meta(source_context_envelope)
 
         if not project.get("lyrics") and not project.get("segments"):
             analysis = build_fallback_analysis(
@@ -883,6 +1122,7 @@ def analyze_lyrics():
                 api_key,
                 segments=project.get("segments", []),
                 song_title=project.get("title", ""),
+                source_context_hint=source_context_hint,
                 primary_language=detected_language,
                 deadline_ts=deadline_ts,
             )
@@ -896,6 +1136,16 @@ def analyze_lyrics():
         )
         if detected_language and not analysis.get("_languageDetected"):
             analysis["_languageDetected"] = detected_language
+        if source_context_text:
+            analysis["_sourceContextUsed"] = True
+            analysis["_sourceContextSummarySnippet"] = source_context_snippet or summarize_text(
+                source_context_text,
+                min(240, SOURCE_CONTEXT_SUMMARY_MAX_CHARS),
+            )
+            if source_context_meta:
+                analysis["_sourceContextMeta"] = source_context_meta
+        elif project.get("youtubeUrl"):
+            analysis["_sourceContextUsed"] = False
 
         if project.get("segments"):
             try:

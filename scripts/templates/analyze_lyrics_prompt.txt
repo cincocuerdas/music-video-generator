@@ -143,6 +143,9 @@ You MUST generate AT LEAST one scene per 5 seconds of lyrics content.
 ===== SONG INFO =====
 {{TITLE_HINT}}
 
+===== OPTIONAL SOURCE CONTEXT =====
+{{SOURCE_CONTEXT_HINT}}
+
 ===== LYRICS TO ANALYZE =====
 {{LYRICS_CONTENT}}
 

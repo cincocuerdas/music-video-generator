@@ -81,3 +81,8 @@ Useful env vars for these scripts:
 - `RESILIENCE_REDIS_CONTAINER`
 - `TEST_OPS_CLEAN_PORTS`
 - `PROD_GUARD_*` (optional overrides for production guard scenarios)
+## Summarize source helper
+- `summarize_source.js`: wraps `@steipete/summarize` and writes JSON output under `output/summaries/`.
+- Safe default mode is `extract` (no LLM key required).
+- Use `--mode summary` when `GEMINI_API_KEY`, `OPENAI_API_KEY`, or another supported provider key is configured.
+- `agent-scripts` was intentionally not integrated as a runtime dependency because there is no stable npm package to pin; treat it as a reference repo, not an application dependency.

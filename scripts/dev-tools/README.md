@@ -83,6 +83,9 @@ Useful env vars for these scripts:
 - `PROD_GUARD_*` (optional overrides for production guard scenarios)
 ## Summarize source helper
 - `summarize_source.js`: wraps `@steipete/summarize` and writes JSON output under `output/summaries/`.
+- `audit_scene_with_smolvlm.py`: optional visual QA helper using `HuggingFaceTB/SmolVLM2-500M-Video-Instruct`; writes JSON output under `output/audit/smolvlm/`.
+- `audit_binary_with_smolvlm.py`: optional yes/no/unclear scene checker using `HuggingFaceTB/SmolVLM2-500M-Video-Instruct`; better for simple per-scene verification than full semantic audits.
 - Safe default mode is `extract` (no LLM key required).
 - Use `--mode summary` when `GEMINI_API_KEY`, `OPENAI_API_KEY`, or another supported provider key is configured.
 - `agent-scripts` was intentionally not integrated as a runtime dependency because there is no stable npm package to pin; treat it as a reference repo, not an application dependency.
+- SmolVLM dependencies are intentionally isolated in `scripts/dev-tools/requirements-smolvlm.txt`; do not add them to the main Python environment unless you want local visual QA.

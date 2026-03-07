@@ -1,0 +1,12 @@
+# Optional dependencies for visual QA with HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+#
+# Install only if you want to run scripts/dev-tools/audit_scene_with_smolvlm.py
+# Do not add these to the main requirements.txt; this is an optional audit tool.
+
+transformers>=4.53.0
+torch>=2.3.0
+decord>=0.6.0
+accelerate>=0.33.0
+Pillow>=10.0.0
+sentencepiece>=0.2.0
+num2words>=0.5.14

@@ -15,98 +15,100 @@ describe('Cross-user authorization -- JobsService', () => {
 
   const createService = () => {
     const jobCrudService = {
-      assertProjectOwnership: jest.fn().mockImplementation(
-        (projectId: string, userId: string) => {
-          if (projectId === PROJECT_ID && userId === USER_A) {
-            return Promise.resolve();
-          }
-          return Promise.reject(
-            new NotFoundException(`Project with id ${projectId} not found`),
-          );
-        },
-      ),
-    };
-
-    const pipelineLifecycleService = {
-      startPipeline: jest.fn().mockResolvedValue([{ id: 'job-1', projectId: PROJECT_ID }]),
-    };
-    const pipelineStatusService = {
-      getPipelineStatus: jest.fn().mockResolvedValue({
-        projectId: PROJECT_ID,
-        status: 'success',
-        jobs: [],
+      assertProjectOwnership: jest.fn().mockImplementation((projectId: string, userId: string) => {
+        if (projectId === PROJECT_ID && userId === USER_A) {
+          return Promise.resolve();
+        }
+        return Promise.reject(new NotFoundException(`Project with id ${projectId} not found`));
       }),
     };
-    const pipelineCancellationService = {
-      cancelPipeline: jest.fn().mockResolvedValue(undefined),
-    };
-    const stub = {} as any;
+
+    const pipelineLifecycleService = {} as any;
+    const pipelineDispatchCoordinatorService = {} as any;
+    const pipelineStatusService = {} as any;
+    const pipelineCancellationService = {} as any;
+    const jobStateService = {} as any;
+    const styleLoraService = {} as any;
+
     const service = new JobsService(
-      jobCrudService as any,  // jobCrudService
-      pipelineLifecycleService as any,
-      stub,                   // pipelineDispatchCoordinatorService
-      pipelineStatusService as any,
-      pipelineCancellationService as any,
-      stub,                   // jobStateService
-      stub,                   // styleLoraService
+      jobCrudService as any,
+      pipelineLifecycleService,
+      pipelineDispatchCoordinatorService,
+      pipelineStatusService,
+      pipelineCancellationService,
+      jobStateService,
+      styleLoraService,
     );
+
     return {
       service,
       jobCrudService,
-      pipelineLifecycleService,
-      pipelineStatusService,
-      pipelineCancellationService,
     };
   };
 
-  // -- startPipelineForUser --
-
   it('User A passes ownership on startPipelineForUser', async () => {
-    const { service, pipelineLifecycleService } = createService();
+    const { service } = createService();
+    const startPipelineSpy = jest
+      .spyOn(service, 'startPipeline')
+      .mockResolvedValue([{ id: 'job-1', projectId: PROJECT_ID }] as any);
+
     await expect(service.startPipelineForUser(PROJECT_ID, USER_A)).resolves.toEqual([
       { id: 'job-1', projectId: PROJECT_ID },
     ]);
-    expect(pipelineLifecycleService.startPipeline).toHaveBeenCalledTimes(1);
+    expect(startPipelineSpy).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('User B gets NotFoundException on startPipelineForUser', async () => {
     const { service } = createService();
-    await expect(
-      service.startPipelineForUser(PROJECT_ID, USER_B),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    const startPipelineSpy = jest.spyOn(service, 'startPipeline');
+
+    await expect(service.startPipelineForUser(PROJECT_ID, USER_B)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(startPipelineSpy).not.toHaveBeenCalled();
   });
 
-  // -- getPipelineStatusForUser --
-
   it('User A passes ownership on getPipelineStatusForUser', async () => {
-    const { service, pipelineStatusService } = createService();
+    const { service } = createService();
+    const getPipelineStatusSpy = jest.spyOn(service, 'getPipelineStatus').mockResolvedValue({
+      projectId: PROJECT_ID,
+      status: 'success',
+      jobs: [],
+    } as any);
+
     await expect(service.getPipelineStatusForUser(PROJECT_ID, USER_A)).resolves.toEqual({
       projectId: PROJECT_ID,
       status: 'success',
       jobs: [],
     });
-    expect(pipelineStatusService.getPipelineStatus).toHaveBeenCalledWith(PROJECT_ID);
+    expect(getPipelineStatusSpy).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('User B gets NotFoundException on getPipelineStatusForUser', async () => {
     const { service } = createService();
-    await expect(
-      service.getPipelineStatusForUser(PROJECT_ID, USER_B),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    const getPipelineStatusSpy = jest.spyOn(service, 'getPipelineStatus');
+
+    await expect(service.getPipelineStatusForUser(PROJECT_ID, USER_B)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(getPipelineStatusSpy).not.toHaveBeenCalled();
   });
 
-  // -- cancelPipelineForUser --
-
   it('User A passes ownership on cancelPipelineForUser', async () => {
-    const { service, pipelineCancellationService } = createService();
+    const { service } = createService();
+    const cancelPipelineSpy = jest.spyOn(service, 'cancelPipeline').mockResolvedValue(undefined);
+
     await expect(service.cancelPipelineForUser(PROJECT_ID, USER_A)).resolves.toBeUndefined();
-    expect(pipelineCancellationService.cancelPipeline).toHaveBeenCalledWith(PROJECT_ID);
+    expect(cancelPipelineSpy).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('User B gets NotFoundException on cancelPipelineForUser', async () => {
     const { service } = createService();
-    await expect(
-      service.cancelPipelineForUser(PROJECT_ID, USER_B),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    const cancelPipelineSpy = jest.spyOn(service, 'cancelPipeline');
+
+    await expect(service.cancelPipelineForUser(PROJECT_ID, USER_B)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(cancelPipelineSpy).not.toHaveBeenCalled();
   });
 });

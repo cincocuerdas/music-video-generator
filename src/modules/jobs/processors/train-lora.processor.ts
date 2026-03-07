@@ -6,6 +6,7 @@ import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestra
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
+import type { TrainLoraResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
 import {
@@ -79,7 +80,7 @@ export class TrainLoraProcessor extends WorkerHost {
         throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
       }
 
-      const result = await this.pythonRunnerService.runScript('train_style_lora.py', [
+      const result = await this.pythonRunnerService.runScript<TrainLoraResult>('train_style_lora.py', [
         style,
       ]);
       const assessment = assessScriptResult(result);

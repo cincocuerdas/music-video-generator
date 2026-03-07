@@ -4,9 +4,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma';
 import { JobsService } from '../jobs/jobs.service';
-import { isValidYoutubeUrl } from '../../common/constants';
 import { toStructuredLog } from '../../common/utils/structured-log.util';
 import {
   CreateProjectDto,
@@ -18,6 +16,7 @@ import {
   deriveProjectPipelineStatus,
   summarizePipelineQuality,
 } from '../jobs/pipeline-quality.utils';
+import { ProjectsRepository } from './repositories';
 import { ProjectFeedbackService } from './services/project-feedback.service';
 import { PromptOptimizationService } from './services/prompt-optimization.service';
 import { LiveSteeringService } from './services/live-steering.service';
@@ -37,20 +36,14 @@ export class ProjectsService {
     const audioUrl = (projectLike.audioUrl || '').trim();
     const lyrics = (projectLike.lyrics || '').trim();
 
-    if (youtubeUrl) {
-      return 'youtube';
-    }
-    if (audioUrl && !lyrics) {
-      return 'audio';
-    }
-    if (lyrics || audioUrl) {
-      return 'lyrics';
-    }
+    if (youtubeUrl) return 'youtube';
+    if (audioUrl && !lyrics) return 'audio';
+    if (lyrics || audioUrl) return 'lyrics';
     return 'unknown';
   }
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly repo: ProjectsRepository,
     private readonly jobsService: JobsService,
     private readonly feedbackService: ProjectFeedbackService,
     private readonly promptOptimization: PromptOptimizationService,
@@ -58,11 +51,7 @@ export class ProjectsService {
   ) {}
 
   private async assertProjectOwnership(projectId: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id: projectId, userId },
-      select: { id: true },
-    });
-
+    const project = await this.repo.findFirst(projectId, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
@@ -82,30 +71,18 @@ export class ProjectsService {
       }),
     );
 
-    if (createProjectDto.youtubeUrl && !isValidYoutubeUrl(createProjectDto.youtubeUrl)) {
-      this.logger.warn(
-        toStructuredLog('projects.create.invalid_youtube_url', {
-          userId,
-          youtubeUrl: createProjectDto.youtubeUrl,
-        }),
-      );
-      throw new BadRequestException('Invalid YouTube URL');
-    }
-
-    return this.prisma.project.create({
-      data: {
-        userId,
-        title: createProjectDto.title,
+    return this.repo.create({
+      userId,
+      title: createProjectDto.title,
+      youtubeUrl: createProjectDto.youtubeUrl,
+      lyrics: createProjectDto.lyrics,
+      sourceMode: this.resolveProjectSourceMode({
         youtubeUrl: createProjectDto.youtubeUrl,
         lyrics: createProjectDto.lyrics,
-        sourceMode: this.resolveProjectSourceMode({
-          youtubeUrl: createProjectDto.youtubeUrl,
-          lyrics: createProjectDto.lyrics,
-        }),
-        visualStyle: createProjectDto.visualStyle,
-        colorPalette: createProjectDto.colorPalette ?? [],
-        aspectRatio: createProjectDto.aspectRatio ?? '16:9',
-      },
+      }),
+      visualStyle: createProjectDto.visualStyle,
+      colorPalette: createProjectDto.colorPalette ?? [],
+      aspectRatio: createProjectDto.aspectRatio ?? '16:9',
     });
   }
 
@@ -113,32 +90,15 @@ export class ProjectsService {
     const skip = (page - 1) * limit;
 
     const [projects, total] = await Promise.all([
-      this.prisma.project.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      this.prisma.project.count({ where: { userId } }),
+      this.repo.findMany(userId, skip, limit),
+      this.repo.count(userId),
     ]);
 
-    return {
-      data: projects,
-      total,
-      page,
-      limit,
-    };
+    return { data: projects, total, page, limit };
   }
 
   async findOne(id: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-      include: {
-        jobs: {
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    });
+    const project = await this.repo.findOneWithJobs(id, userId);
 
     if (!project) {
       throw new NotFoundException('Project not found');
@@ -155,90 +115,51 @@ export class ProjectsService {
   }
 
   async update(id: string, userId: string, updateProjectDto: UpdateProjectDto) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-    });
-
+    const project = await this.repo.findOne(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
 
-    return this.prisma.project.update({
-      where: { id },
-      data: {
-        ...updateProjectDto,
-        sourceMode: this.resolveProjectSourceMode({
-          youtubeUrl: project.youtubeUrl,
-          audioUrl: project.audioUrl,
-          lyrics: updateProjectDto.lyrics ?? project.lyrics,
-        }),
-      },
+    return this.repo.update(id, {
+      ...updateProjectDto,
+      sourceMode: this.resolveProjectSourceMode({
+        youtubeUrl: project.youtubeUrl,
+        audioUrl: project.audioUrl,
+        lyrics: updateProjectDto.lyrics ?? project.lyrics,
+      }),
     });
   }
 
   async remove(id: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-    });
-
+    const project = await this.repo.findOne(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
-
-    return this.prisma.project.delete({ where: { id } });
+    return this.repo.delete(id);
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // AUDIO UPLOAD
-  // ═══════════════════════════════════════════════════════════════════════════
-
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // VERSES
-  // ═══════════════════════════════════════════════════════════════════════════
 
   // ═══════════════════════════════════════════════════════════════════════════
   // GENERATION
   // ═══════════════════════════════════════════════════════════════════════════
 
   async startGeneration(id: string, userId: string, dto: StartGenerationDto) {
-    if (dto.youtubeUrl && !isValidYoutubeUrl(dto.youtubeUrl)) {
-      this.logger.warn(
-        toStructuredLog('projects.start_generation.invalid_youtube_url', {
-          projectId: id,
-          userId,
-          youtubeUrl: dto.youtubeUrl,
-        }),
-      );
-      throw new BadRequestException('Invalid YouTube URL');
-    }
-
-    // Verify project exists and belongs to user
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-    });
-
+    const project = await this.repo.findOne(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
 
-    // Update project with youtubeUrl if provided
     if (dto.youtubeUrl) {
-      await this.prisma.project.update({
-        where: { id },
-        data: {
+      await this.repo.update(id, {
+        youtubeUrl: dto.youtubeUrl,
+        sourceMode: this.resolveProjectSourceMode({
           youtubeUrl: dto.youtubeUrl,
-          sourceMode: this.resolveProjectSourceMode({
-            youtubeUrl: dto.youtubeUrl,
-            audioUrl: project.audioUrl,
-            lyrics: project.lyrics,
-          }),
-          visualStyle: dto.visualStyle || project.visualStyle || 'cinematic',
-        },
+          audioUrl: project.audioUrl,
+          lyrics: project.lyrics,
+        }),
+        visualStyle: dto.visualStyle || project.visualStyle || 'cinematic',
       });
     }
 
-    // Start the job pipeline
     const jobs = await this.jobsService.startPipeline(id);
 
     return {
@@ -254,31 +175,11 @@ export class ProjectsService {
   }
 
   async getStatus(id: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-      include: {
-        jobs: {
-          orderBy: { createdAt: 'asc' },
-          select: {
-            id: true,
-            type: true,
-            status: true,
-            progress: true,
-            currentStep: true,
-            errorMessage: true,
-            outputData: true,
-            createdAt: true,
-            updatedAt: true,
-          },
-        },
-      },
-    });
-
+    const project = await this.repo.findForStatus(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
 
-    // Calculate overall progress from core pipeline jobs only.
     const jobs = project.jobs;
     const pipelineJobTypes = new Set([
       'YOUTUBE_DOWNLOAD',
@@ -295,12 +196,9 @@ export class ProjectsService {
       totalJobs > 0
         ? Math.round(
             progressJobs.reduce((sum, job) => {
-              if (String(job.status) === 'COMPLETED') {
-                return sum + 100;
-              }
+              if (String(job.status) === 'COMPLETED') return sum + 100;
               if (String(job.status) === 'PROCESSING') {
-                const safeProgress = Math.max(0, Math.min(100, job.progress || 0));
-                return sum + safeProgress;
+                return sum + Math.max(0, Math.min(100, job.progress || 0));
               }
               return sum;
             }, 0) / totalJobs,
@@ -328,21 +226,13 @@ export class ProjectsService {
   }
 
   async cancelGeneration(id: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-    });
-
+    const project = await this.repo.findOne(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
 
     await this.jobsService.cancelPipeline(id);
-
-    return {
-      success: true,
-      message: 'Generation cancelled',
-      projectId: id,
-    };
+    return { success: true, message: 'Generation cancelled', projectId: id };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -350,23 +240,7 @@ export class ProjectsService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async getVideo(id: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-      select: {
-        id: true,
-        status: true,
-        videoUrl: true,
-        thumbnailUrl: true,
-        jobs: {
-          select: {
-            type: true,
-            status: true,
-            outputData: true,
-          },
-        },
-      },
-    });
-
+    const project = await this.repo.findForVideo(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
@@ -385,24 +259,14 @@ export class ProjectsService {
   }
 
   async getDownloadUrl(id: string, userId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id, userId },
-      select: { id: true, videoUrl: true },
-    });
-
+    const project = await this.repo.findForDownload(id, userId);
     if (!project) {
       throw new NotFoundException('Project not found');
     }
-
     if (!project.videoUrl) {
       throw new BadRequestException('Project does not have a rendered video yet');
     }
-
-    return {
-      projectId: project.id,
-      downloadUrl: project.videoUrl,
-      expiresAt: null,
-    };
+    return { projectId: project.id, downloadUrl: project.videoUrl, expiresAt: null };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

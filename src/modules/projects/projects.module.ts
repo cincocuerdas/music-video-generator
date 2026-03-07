@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
+import { ProjectsRepository } from './repositories';
 import { PrismaModule } from '../prisma';
 import { JobsModule } from '../jobs/jobs.module';
 import { EventsModule } from '../events/events.module';
@@ -20,6 +21,7 @@ import { LiveSteeringService } from './services/live-steering.service';
   ],
   controllers: [ProjectsController],
   providers: [
+    ProjectsRepository,
     ProjectsService,
     ProjectFeedbackService,
     PromptOptimizationService,

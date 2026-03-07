@@ -2,7 +2,7 @@ import { ProjectsService } from './projects.service';
 
 describe('ProjectsService.getPromptOptimization', () => {
   const createService = () => {
-    const prisma = {};
+    const repo = {};
     const jobsService = {};
     const feedbackService = {};
     const promptOptimization = {
@@ -11,7 +11,7 @@ describe('ProjectsService.getPromptOptimization', () => {
     const liveSteering = {};
 
     const service = new ProjectsService(
-      prisma as any,
+      repo as any,
       jobsService as any,
       feedbackService as any,
       promptOptimization as any,
@@ -65,4 +65,3 @@ describe('ProjectsService.getPromptOptimization', () => {
     expect(result.confidence).toBe(0.5);
   });
 });
-

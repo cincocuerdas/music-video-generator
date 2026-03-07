@@ -6,6 +6,7 @@ import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestra
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
+import type { TranscriptionResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
 import {
@@ -78,7 +79,7 @@ export class TranscriptionProcessor extends WorkerHost {
             }
 
             let reportedProgress = 10;
-            const result = await this.pythonRunnerService.runScriptWithProgress(
+            const result = await this.pythonRunnerService.runScriptWithProgress<TranscriptionResult>(
                 'transcribe_audio.py',
                 [projectId],
                 (event) => {

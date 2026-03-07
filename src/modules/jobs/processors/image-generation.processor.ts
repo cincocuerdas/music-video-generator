@@ -7,6 +7,7 @@ import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService } from '../../../common/services/circuit-breaker.service';
 import { PythonRunnerService, ProgressEvent } from '../../../common/services/python-runner.service';
+import type { ImageGenerationResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { ProjectsService } from '../../projects/projects.service';
 import { SentryService } from '../../observability';
@@ -80,7 +81,7 @@ export class ImageGenerationProcessor extends WorkerHost {
         );
       }
 
-      const result = await this.pythonRunner.runScriptWithProgress(
+      const result = await this.pythonRunner.runScriptWithProgress<ImageGenerationResult>(
         'generate_images.py',
         [projectId, jobId, optimizationArg],
         (event: ProgressEvent) => {

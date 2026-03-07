@@ -6,6 +6,7 @@ import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestra
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
+import type { YouTubeDownloadResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
 import {
@@ -77,7 +78,7 @@ export class YouTubeDownloadProcessor extends WorkerHost {
             }
 
             // Call Python script to download audio and thumbnail
-            const result = await this.pythonRunnerService.runScript('youtube_download.py', [projectId]);
+            const result = await this.pythonRunnerService.runScript<YouTubeDownloadResult>('youtube_download.py', [projectId]);
             const assessment = assessScriptResult(result);
 
             if (assessment.normalizedStatus === 'failed') {

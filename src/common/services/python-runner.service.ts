@@ -69,15 +69,15 @@ export class PythonRunnerService {
     return byScript[scriptName] ?? this.defaultTimeoutMs;
   }
 
-  async runScript(scriptName: string, args: string[]): Promise<any> {
-    return this.runScriptWithProgress(scriptName, args);
+  async runScript<T = unknown>(scriptName: string, args: string[]): Promise<T> {
+    return this.runScriptWithProgress<T>(scriptName, args);
   }
 
-  async runScriptWithProgress(
+  async runScriptWithProgress<T = unknown>(
     scriptName: string,
     args: string[],
     onProgress?: (event: ProgressEvent) => void,
-  ): Promise<any> {
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const scriptPath = path.join(process.cwd(), 'scripts', scriptName);
       const timeoutMs = this.resolveScriptTimeoutMs(scriptName);
@@ -306,7 +306,7 @@ export class PythonRunnerService {
           }
 
           if (!dataString.trim()) {
-            resolve({ message: 'Script finished without output' });
+            resolve({ message: 'Script finished without output' } as T);
             return;
           }
 
@@ -318,7 +318,7 @@ export class PythonRunnerService {
             const result = JSON.parse(jsonPart);
             resolve(result);
           } else {
-            resolve({ rawOutput: dataString });
+            resolve({ rawOutput: dataString } as T);
           }
 
         } catch (error) {
@@ -328,7 +328,7 @@ export class PythonRunnerService {
               error: error instanceof Error ? error.message : String(error),
             }),
           );
-          resolve({ rawOutput: dataString });
+          resolve({ rawOutput: dataString } as T);
         }
       });
 

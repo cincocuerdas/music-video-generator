@@ -6,6 +6,7 @@ import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestra
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
+import type { VideoRenderResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
 import {
@@ -89,7 +90,7 @@ export class VideoRenderProcessor extends WorkerHost {
         throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
       }
 
-      const result = await this.pythonRunnerService.runScript('render_video.py', [projectId]);
+      const result = await this.pythonRunnerService.runScript<VideoRenderResult>('render_video.py', [projectId]);
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {
         throw new Error(assessment.message || 'render_video.py returned failed status');

@@ -6,6 +6,7 @@ import { DeadLetterOrchestratorService } from '../services/dead-letter-orchestra
 import { JobType } from '../dto';
 import { QUEUE_NAMES } from '../../queue';
 import { CircuitBreakerService, PythonRunnerService } from '../../../common/services';
+import type { LyricsAnalysisResult } from '../../../common/services/python-runner.types';
 import { EventsGateway } from '../../events';
 import { SentryService } from '../../observability';
 import {
@@ -84,7 +85,7 @@ export class AnalysisProcessor extends WorkerHost {
         throw new Error(`Circuit open for ${circuitKey}. Retry after ${circuitDecision.retryAfterMs}ms`);
       }
 
-      const result = await this.pythonRunnerService.runScript('analyze_lyrics.py', [projectId]);
+      const result = await this.pythonRunnerService.runScript<LyricsAnalysisResult>('analyze_lyrics.py', [projectId]);
       const assessment = assessScriptResult(result);
       if (assessment.normalizedStatus === 'failed') {
         throw new Error(assessment.message || 'analyze_lyrics.py returned failed status');

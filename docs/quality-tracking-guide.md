@@ -66,7 +66,7 @@ For each run:
 2. Review only the bad or risky scenes, plus 1-2 good scenes
 3. Fill those scenes in `scene-quality-tracking-template.csv`
 4. Reuse tags from `docs/generation-failure-taxonomy.md`
-5. **Set the `decision` field** (see below)
+5. Set the `decision` field (see below)
 
 ## Decision Field
 
@@ -75,7 +75,7 @@ Each run gets a `decision` value in `quality-tracking-template.csv`:
 | Value | Meaning |
 |-------|---------|
 | `usable_as_is` | Can publish without human editing |
-| `usable_minor_edits` | Needs crop/color/minor retouch on ≤2 scenes |
+| `usable_minor_edits` | Needs crop/color/minor retouch on <=2 scenes |
 | `not_publishable` | Fundamental failures; cannot ship |
 | `pending_review` | Not yet reviewed (default for new runs) |
 
@@ -97,6 +97,40 @@ Use a small consistent set first:
 - `identity_drift`
 - `quality_gate_missed_bad_output`
 - `fallback_overuse`
+
+## Optional SmolVLM Auxiliary Signal
+
+If you use `SmolVLM2-500M-Video-Instruct`, treat it as a low-confidence helper only.
+
+Allowed uses:
+
+- `Is there a crowd?`
+- `Is the main subject human?`
+- `Is there an animal as the main subject?`
+- `Is there readable text/signage?`
+- `Is this mostly a close-up?`
+
+Do not use it for:
+
+- anatomy quality (`hands`, `mouth`, `eyes`)
+- identity consistency
+- pass/fail decisions
+- automatic score penalties
+- judging a full multiscene final video against a single-scene prompt
+
+Tracking policy:
+
+- record SmolVLM outputs as `auxiliary_signal`
+- keep human review as the source of truth
+- never change generation rules from SmolVLM alone
+
+Suggested extra scene fields if you use it:
+
+- `smolvlm_used`
+- `smolvlm_question`
+- `smolvlm_answer`
+- `smolvlm_confidence`
+- `smolvlm_confirmed_by_human`
 
 ## Decision Rule For Next Iteration
 

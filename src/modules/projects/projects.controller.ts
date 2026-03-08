@@ -11,7 +11,6 @@ import {
   ParseUUIDPipe,
   ParseIntPipe,
   DefaultValuePipe,
-  UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
@@ -25,7 +24,6 @@ import { ProjectsService } from './projects.service';
 import {
   AuthenticatedRequest,
   AuthService,
-  JwtAuthGuard,
 } from '../auth';
 import {
   CreateProjectDto,
@@ -36,7 +34,6 @@ import {
 } from './dto';
 
 @Controller('projects')
-@UseGuards(JwtAuthGuard)
 @ApiTags('projects')
 @ApiBearerAuth()
 @ApiEnvelopeDefaultErrorResponses({ unauthorized: true, notFound: true })

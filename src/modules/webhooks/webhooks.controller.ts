@@ -5,7 +5,9 @@ import { Request } from 'express';
 import { THROTTLE_RULES } from '../../common/constants';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WebhooksService } from './webhooks.service';
+import { Public } from '../auth/public.decorator';
 
+@Public()
 @Controller('webhooks')
 @ApiTags('webhooks')
 export class WebhooksController {

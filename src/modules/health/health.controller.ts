@@ -7,7 +7,9 @@ import {
   ApiEnvelopeOkResponse,
 } from '../../common/swagger/api-envelope.decorators';
 import { HealthService } from './health.service';
+import { Public } from '../auth/public.decorator';
 
+@Public()
 @Controller('health')
 @ApiTags('health')
 @ApiEnvelopeDefaultErrorResponses({ badRequest: true })

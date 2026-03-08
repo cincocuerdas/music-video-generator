@@ -8,7 +8,6 @@ import {
   Delete,
   Req,
   Query,
-  UseGuards,
   ParseUUIDPipe,
   DefaultValuePipe,
   ParseIntPipe,
@@ -27,11 +26,9 @@ import { CreateJobDto, UpdateJobDto } from './dto';
 import {
   AuthenticatedRequest,
   AuthService,
-  JwtAuthGuard,
 } from '../auth';
 
 @Controller('jobs')
-@UseGuards(JwtAuthGuard)
 @ApiTags('jobs')
 @ApiBearerAuth()
 @ApiEnvelopeDefaultErrorResponses({ unauthorized: true, notFound: true })

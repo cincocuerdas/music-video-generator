@@ -16,6 +16,15 @@ export class ProjectsRepository {
       orderBy: { createdAt: 'desc' },
       skip,
       take,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        thumbnailUrl: true,
+        videoUrl: true,
+        visualStyle: true,
+        createdAt: true,
+      },
     });
   }
 
@@ -26,13 +35,48 @@ export class ProjectsRepository {
   async findOneWithJobs(id: string, userId: string) {
     return this.prisma.project.findFirst({
       where: { id, userId },
-      include: { jobs: { orderBy: { createdAt: 'asc' } } },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        youtubeUrl: true,
+        sourceMode: true,
+        thumbnailUrl: true,
+        videoUrl: true,
+        visualStyle: true,
+        createdAt: true,
+        analysisResult: true,
+        jobs: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            progress: true,
+            currentStep: true,
+            errorMessage: true,
+            outputData: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
     });
   }
 
   async findOne(id: string, userId: string) {
     return this.prisma.project.findFirst({
       where: { id, userId },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        youtubeUrl: true,
+        audioUrl: true,
+        lyrics: true,
+        visualStyle: true,
+        sourceMode: true,
+      },
     });
   }
 
@@ -54,7 +98,9 @@ export class ProjectsRepository {
   async findForStatus(id: string, userId: string) {
     return this.prisma.project.findFirst({
       where: { id, userId },
-      include: {
+      select: {
+        id: true,
+        status: true,
         jobs: {
           orderBy: { createdAt: 'asc' },
           select: {

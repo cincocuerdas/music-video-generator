@@ -6,7 +6,6 @@ import {
   Post,
   Req,
   Res,
-  UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
@@ -19,7 +18,7 @@ import {
 } from '../../common/swagger/api-envelope.decorators';
 import { AuthService } from './auth.service';
 import { AuthenticatedRequest } from './auth.types';
-import { JwtAuthGuard } from './jwt-auth.guard';
+import { Public } from './public.decorator';
 import { LoginDevDto } from './dto/login-dev.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
@@ -34,6 +33,7 @@ export class AuthController {
 
   constructor(private readonly authService: AuthService) {}
 
+  @Public()
   @Post('dev-token')
   @Throttle(THROTTLE_RULES.authDevToken)
   @ApiOperation({ summary: 'Issue development token (dev only)' })
@@ -42,6 +42,7 @@ export class AuthController {
     return this.authService.issueDevToken(dto);
   }
 
+  @Public()
   @Post('login/dev')
   @Throttle(THROTTLE_RULES.authLoginDev)
   @ApiOperation({ summary: 'Login with development identity and issue session tokens' })
@@ -59,6 +60,7 @@ export class AuthController {
     return this.withoutRefreshToken(result);
   }
 
+  @Public()
   @Post('refresh')
   @HttpCode(200)
   @Throttle(THROTTLE_RULES.authRefresh)
@@ -78,6 +80,7 @@ export class AuthController {
     return this.withoutRefreshToken(result);
   }
 
+  @Public()
   @Post('logout')
   @HttpCode(200)
   @Throttle(THROTTLE_RULES.authLogout)
@@ -95,7 +98,6 @@ export class AuthController {
   }
 
   @Get('me')
-  @UseGuards(JwtAuthGuard)
   @Throttle(THROTTLE_RULES.authMe)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current authenticated user claims' })

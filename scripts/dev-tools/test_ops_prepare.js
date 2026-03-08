@@ -1,5 +1,7 @@
 /* eslint-disable no-console */
 const { spawn } = require('child_process');
+const IORedis = require('ioredis');
+const { getRedisConnectionOptions } = require('./test_config');
 
 const TARGET_PORTS = (process.env.TEST_OPS_CLEAN_PORTS || '3000')
   .split(',')
@@ -111,10 +113,37 @@ async function cleanupPort(port) {
   console.log(`cleanup_port=${port} killed=${pids.join(',')}`);
 }
 
+async function clearRedisPattern(pattern) {
+  const redisConnection = getRedisConnectionOptions();
+  const client = redisConnection.url
+    ? new IORedis(redisConnection.url, { maxRetriesPerRequest: null })
+    : new IORedis({ ...redisConnection, maxRetriesPerRequest: null });
+
+  try {
+    let cursor = '0';
+    let deleted = 0;
+    do {
+      const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        deleted += await client.del(...keys);
+      }
+    } while (cursor !== '0');
+    console.log(`cleanup_redis_pattern=${pattern} deleted=${deleted}`);
+  } catch (error) {
+    console.log(`cleanup_redis_pattern=${pattern} skipped=${error?.message || String(error)}`);
+  } finally {
+    await client.quit().catch(async () => {
+      await client.disconnect();
+    });
+  }
+}
+
 async function main() {
   for (const port of TARGET_PORTS) {
     await cleanupPort(port);
   }
+  await clearRedisPattern('throttler:*');
   console.log('test_ops_prepare_status=PASS');
 }
 

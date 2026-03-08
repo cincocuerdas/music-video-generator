@@ -7,13 +7,13 @@ import { join } from 'path';
 import { appConfig, databaseConfig, redisConfig } from './config';
 import { PrismaModule } from './modules/prisma';
 import { QueueModule } from './modules/queue';
-import { RedisModule } from './modules/redis';
+import { RedisModule, RedisThrottlerStorageService } from './modules/redis';
 import { HealthModule } from './modules/health';
 import { ProjectsModule } from './modules/projects';
 import { JobsModule } from './modules/jobs';
 import { PythonRunnerModule } from './common/services';
 import { EventsModule } from './modules/events';
-import { AuthModule } from './modules/auth';
+import { AuthModule, JwtAuthGuard } from './modules/auth';
 import { HttpThrottlerGuard } from './common/guards/http-throttler.guard';
 import { ObservabilityModule } from './modules/observability';
 import { AllExceptionsFilter } from './common/filters';
@@ -31,13 +31,20 @@ const parseEnvNumber = (value: string | undefined, fallback: number): number => 
       load: [appConfig, databaseConfig, redisConfig],
       envFilePath: ['.env.local', '.env'],
     }),
-    ThrottlerModule.forRoot([
-      {
-        name: 'default',
-        ttl: parseEnvNumber(process.env.THROTTLE_TTL_MS, 60_000),
-        limit: parseEnvNumber(process.env.THROTTLE_LIMIT, 120),
-      },
-    ]),
+    ThrottlerModule.forRootAsync({
+      imports: [RedisModule],
+      inject: [RedisThrottlerStorageService],
+      useFactory: (storage: RedisThrottlerStorageService) => ({
+        storage,
+        throttlers: [
+          {
+            name: 'default',
+            ttl: parseEnvNumber(process.env.THROTTLE_TTL_MS, 60_000),
+            limit: parseEnvNumber(process.env.THROTTLE_LIMIT, 120),
+          },
+        ],
+      }),
+    }),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'output'),
       serveRoot: '/output',
@@ -55,6 +62,10 @@ const parseEnvNumber = (value: string | undefined, fallback: number): number => 
     EventsModule,
   ],
   providers: [
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: HttpThrottlerGuard,

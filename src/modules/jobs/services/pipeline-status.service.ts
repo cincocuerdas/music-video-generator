@@ -8,6 +8,11 @@ import {
 } from '../pipeline-quality.utils';
 import type { PipelineStatus } from '../types/pipeline-status.type';
 
+type PipelineJobRow = Pick<
+  Job,
+  'type' | 'status' | 'progress' | 'currentStep' | 'errorMessage' | 'outputData'
+>;
+
 @Injectable()
 export class PipelineStatusService {
   constructor(private readonly prisma: PrismaService) {}
@@ -15,6 +20,10 @@ export class PipelineStatusService {
   async getPipelineStatus(projectId: string): Promise<PipelineStatus> {
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
+      select: {
+        id: true,
+        status: true,
+      },
     });
 
     if (!project) {
@@ -24,6 +33,14 @@ export class PipelineStatusService {
     const jobs = await this.prisma.job.findMany({
       where: { projectId },
       orderBy: { createdAt: 'asc' },
+      select: {
+        type: true,
+        status: true,
+        progress: true,
+        currentStep: true,
+        errorMessage: true,
+        outputData: true,
+      },
     });
 
     const currentJob = jobs.find((job) => job.status === JobStatus.PROCESSING);
@@ -43,7 +60,7 @@ export class PipelineStatusService {
     };
   }
 
-  private calculateOverallProgress(pipelineJobs: Job[]): number {
+  private calculateOverallProgress(pipelineJobs: PipelineJobRow[]): number {
     const normalizedPipelineProgress = pipelineJobs.reduce((sum, job) => {
       if (job.status === JobStatus.COMPLETED) {
         return sum + 100;
@@ -62,7 +79,7 @@ export class PipelineStatusService {
       : 0;
   }
 
-  private toJobStatusView(job: Job): PipelineStatus['jobs'][number] {
+  private toJobStatusView(job: PipelineJobRow): PipelineStatus['jobs'][number] {
     return {
       type: job.type,
       status: job.status,
@@ -72,4 +89,3 @@ export class PipelineStatusService {
     };
   }
 }
-

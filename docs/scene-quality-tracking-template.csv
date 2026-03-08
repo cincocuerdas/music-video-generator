@@ -30,27 +30,27 @@ run_005,2,,NARRATIVE,protest signs FREEDOM,gemini,gemini-3-pro-image-preview,0.8
 run_005,3,,LITERAL,laughing group karaoke,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Mouths, teeth, and microphones remain usable with no obvious fusion artifacts",mouth stress pass
 run_005,4,,NARRATIVE,stadium thousands faces,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Foreground faces remain coherent and distant crowd does not show obvious cloning,stadium crowd pass
 run_006,0,,INTROSPECTIVE,couple embrace tears close-up,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Tight close-up, both faces visible, tears readable, no facial fusion",targeted fix closed the case
-run_007,0,,NARRATIVE,protest march fists raised,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: crowd coherence, fists"
-run_007,1,,LITERAL,fans stadium gates scarves,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: face degradation in crowd
-run_007,2,,NARRATIVE,wedding dance floor bride,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: bride distinct, crowd natural"
-run_007,3,,LITERAL,fire jugglers crowd barriers,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: fire + crowd separation
-run_007,4,,NARRATIVE,graduation caps gowns,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: rows of students coherent
-run_008,0,,NARRATIVE,hacker holographic terminal,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: neon, rain, tech detail"
-run_008,1,,LITERAL,android crowded subway,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: android distinct from humans
-run_008,2,,NARRATIVE,drone swarms mega-city,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: drone pattern, skyline"
-run_008,3,,NARRATIVE,bounty hunters rooftop,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,,,"**FALSE POSITIVE**: ""smoke"" triggered effect_scene, but scene has 2 people. ""hunters"" missing from people keywords."
-run_008,4,,LITERAL,ramen vendor holographic ads,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: holo ads, stall detail"
-run_009,0,,NARRATIVE,dragon crumbling tower fire,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,,,"**FALSE POSITIVE**: ""fire"" triggered effect_scene, but dragon should be animal_subject. ""dragon"" missing from animal_keywords."
-run_009,1,,LITERAL,elven archer moonlit forest,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: archer pose, bow, forest"
-run_009,2,,NARRATIVE,stone golem vines earth,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: golem anatomy, environment"
-run_009,3,,LITERAL,wizard hands lightning books,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,,,"**FALSE POSITIVE**: ""lightning"" triggered effect_scene. Wizard's hands scene — ""wizard"" not in people keywords, portrait_hint blocked human_detail."
-run_009,4,,LITERAL,fairy village hollow tree,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: miniature detail, lanterns"
-run_010,0,,LITERAL,old woman window tears,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: wrinkles, tear detail"
-run_010,1,,LITERAL,boxer locker room bruised,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: bruises, swollen eye"
-run_010,2,,LITERAL,mother newborn tiny fingers,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: baby anatomy, hand detail"
-run_010,3,,NARRATIVE,soldier reads letter tear,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: letter legible, firelight"
-run_010,4,,LITERAL,child aquarium glass fish,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: reflection, fish detail"
-run_011,0,,,bounty hunters + smoke rooftop,gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=portrait_human; previous=effect_scene Q=0.70 (P8-sc3)
-run_011,1,,,dragon + fire on tower,gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=animal_subject; previous=effect_scene Q=0.70 (P9-sc0)
-run_011,2,,,wizard + lightning in library,gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=portrait_human; previous=effect_scene Q=0.70 (P9-sc3)
-run_011,3,,,hands on railing (control),gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=human_detail; previous=human_detail Q=0.82 (no change)
+run_007,0,,NARRATIVE,protest march fists raised,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Crowd composition and raised fists remained coherent; protest signs stayed readable enough.,crowd-heavy pass
+run_007,1,,LITERAL,fans stadium gates scarves,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Stadium crowd held up without obvious repeated faces or collapse at the gates.,crowd-heavy pass
+run_007,2,,NARRATIVE,wedding dance floor bride,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Bride stayed distinct while the dance-floor crowd remained natural.,crowd-heavy pass
+run_007,3,,LITERAL,fire jugglers crowd barriers,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Fire effects and surrounding crowd stayed separated and believable.,crowd-heavy pass
+run_007,4,,NARRATIVE,graduation caps gowns,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Rows of graduates stayed coherent with no obvious cloning artifacts.,crowd-heavy pass
+run_008,0,,NARRATIVE,hacker holographic terminal,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Neon, rain, and holographic terminal details read clearly.",cyberpunk pass
+run_008,1,,LITERAL,android crowded subway,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Android subject stayed distinct from surrounding subway passengers.,cyberpunk pass
+run_008,2,,NARRATIVE,drone swarms mega-city,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Drone swarm pattern and skyline composition both held together.,cyberpunk pass
+run_008,3,,NARRATIVE,bounty hunters rooftop,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,yes,Two bounty hunters on a rooftop read correctly; smoke only caused a scoring/routing false positive.,"false-positive routing tag, visual pass"
+run_008,4,,LITERAL,ramen vendor holographic ads,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Ramen vendor and holographic signage remained detailed and readable.,cyberpunk pass
+run_009,0,,NARRATIVE,dragon crumbling tower fire,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,yes,Dragon is the dominant subject on the tower; fire only triggered a routing false positive.,"false-positive routing tag, visual pass"
+run_009,1,,LITERAL,elven archer moonlit forest,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Archer pose, bow, and moonlit forest all read clearly.",fantasy pass
+run_009,2,,NARRATIVE,stone golem vines earth,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Stone golem anatomy and earth/vine environment stayed coherent.,fantasy pass
+run_009,3,,LITERAL,wizard hands lightning books,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,yes,Wizard subject dominates the frame; lightning and books support the scene correctly.,"false-positive routing tag, visual pass"
+run_009,4,,LITERAL,fairy village hollow tree,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Miniature fairy-village detail and lanterns stayed consistent.,fantasy pass
+run_010,0,,LITERAL,old woman window tears,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Wrinkles, gaze, and visible tear track all held up in close-up.",close-up emotional pass
+run_010,1,,LITERAL,boxer locker room bruised,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Bruises and swollen eye read clearly without anatomy artifacts.,close-up emotional pass
+run_010,2,,LITERAL,mother newborn tiny fingers,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Mother/newborn framing, baby anatomy, and hand detail remained strong.",close-up emotional pass
+run_010,3,,NARRATIVE,soldier reads letter tear,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Soldier, tear, letter, and firelight all read correctly.",close-up emotional pass
+run_010,4,,LITERAL,child aquarium glass fish,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Child close-up, reflection, and fish detail remained coherent.",close-up emotional pass
+run_011,0,,,bounty hunters + smoke rooftop,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Keyword fix worked: hunters stay the clear human subjects even with smoke present.,keyword-fix validated
+run_011,1,,,dragon + fire on tower,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Keyword fix worked: dragon remains the dominant animal subject despite fire.,keyword-fix validated
+run_011,2,,,wizard + lightning in library,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Keyword fix worked: wizard stays the dominant human subject despite lightning.,keyword-fix validated
+run_011,3,,,hands on railing (control),gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Hands control scene preserved the prior good result with no regression.,keyword-fix validated

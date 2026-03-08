@@ -1,12 +1,12 @@
 run_id,scene_index,timestamp_range,verse_type,verse_text,provider,model,quality_score,exposed,user_feedback,failure_tags,passed_visual_review,reason,notes
-run_001,0,,LITERAL,neon streets midnight,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
-run_001,1,,LITERAL,rain on broken glass,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
-run_001,2,,LITERAL,woman red dress streetlight,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
+run_001,0,,LITERAL,neon streets midnight,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Neon street composition is coherent and cinematic; subject and environment remain readable,strong urban baseline
+run_001,1,,LITERAL,rain on broken glass,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Rain, reflections, and broken-glass street texture read clearly without visual collapse",environment detail baseline
+run_001,2,,LITERAL,woman red dress streetlight,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Single-subject framing holds up and the red-dress cue remains visually legible,portrait baseline
 run_001,3,,NARRATIVE,two friends rooftop,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Two-person composition held up; expressions and faces remained coherent,multi_person baseline
 run_001,4,,NARRATIVE,crowd at concert gates,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Crowd scene remained coherent without obvious background-face collapse,crowd baseline
 run_001,5,,LITERAL,hands reaching sky,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Hands were usable and the frame avoided severe finger deformation,hands baseline
-run_001,6,,LITERAL,man alone dark room phone,gemini,gemini-3-pro-image-preview,0.82,true,,,,,
-run_001,7,,NARRATIVE,fireworks over river,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
+run_001,6,,LITERAL,man alone dark room phone,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Phone-lit solitude scene is stable and semantically correct with no visible artifacts,indoor solo baseline
+run_001,7,,NARRATIVE,fireworks over river,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Fireworks and skyline composition are clean and match the scene intent,environment spectacle baseline
 run_002,0,,NARRATIVE,soldier alone desert,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,environment_incoherence",no,Usable soldier image but weak film-noir adherence; reads as generic war portrait,style drift
 run_002,1,,NARRATIVE,boots cracked by sun,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output",no,"Scene should focus on boots, but human portrait contamination dominated the frame",boots unresolved in P2
 run_002,2,,NARRATIVE,children marketplace,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Children anatomy and motion were credible,good multi-person action

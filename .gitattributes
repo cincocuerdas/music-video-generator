@@ -1,1 +1,31 @@
+* text=auto
+
+# Source and config files should remain LF across platforms.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.env text eol=lf
+*.example text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.svg text eol=lf
+*.xml text eol=lf
+*.txt text eol=lf
+*.sql text eol=lf
+
+# Windows-native scripts keep CRLF for shell compatibility.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
 .githooks/* text eol=lf

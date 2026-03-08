@@ -5,7 +5,44 @@
 
 ## Futuras Features
 
-### 1. Modo Instrumental / Experimental
+### 1. Audio Intelligence / Audio Features
+**Prioridad:** Alta
+**Complejidad:** Media
+
+**Descripción:**
+Agregar un modulo de inteligencia de audio que produzca `audio_features.json` por proyecto para enriquecer transcripcion, analisis de lyrics y sincronizacion visual.
+
+**Capacidades objetivo:**
+- BPM / tempo
+- beats y downbeats
+- deteccion de secciones
+- energy curve / loudness curve
+- vocal presence estimate
+- mood hints
+- vocal proxy opcional para transcripcion
+
+**Valor de producto:**
+- mejor timing de escenas
+- mejor alineacion musica -> corte
+- mejor robustez de transcripcion
+- base limpia para features premium futuras
+
+**Documento de arquitectura:**
+- `docs/audio-features-architecture.md`
+
+**Implementacion recomendada:**
+- `Phase 1`: extraccion read-only y enrichment opcional
+- `Phase 2`: vocal proxy para transcription
+- `Phase 3`: beat/section-aware rendering
+
+**No hacer al inicio:**
+- no perseguir paridad con productos tipo Moises
+- no depender de datasets non-commercial
+- no volver esto un DAW
+
+---
+
+### 2. Modo Instrumental / Experimental
 **Prioridad:** Media
 **Complejidad:** Alta
 
@@ -45,7 +82,7 @@ Cuando una canción es completamente instrumental (sin voz), la app debería ana
 
 ---
 
-### 2. LTX 2.3 Video Provider (Cloud-Only)
+### 3. LTX 2.3 Video Provider (Cloud-Only)
 **Prioridad:** Media
 **Complejidad:** Alta
 

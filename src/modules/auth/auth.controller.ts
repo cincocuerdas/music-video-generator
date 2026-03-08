@@ -16,9 +16,17 @@ import {
   ApiEnvelopeDefaultErrorResponses,
   ApiEnvelopeOkResponse,
 } from '../../common/swagger/api-envelope.decorators';
+import { serializeDto } from '../../common/utils/serialize-dto.util';
 import { AuthService } from './auth.service';
 import { AuthenticatedRequest } from './auth.types';
 import { Public } from './public.decorator';
+import {
+  AuthLoginResponseDto,
+  AuthMeResponseDto,
+  AuthRefreshResponseDto,
+  DevTokenResponseDto,
+  LogoutResponseDto,
+} from './dto/auth-response.dto';
 import { LoginDevDto } from './dto/login-dev.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
@@ -39,7 +47,9 @@ export class AuthController {
   @ApiOperation({ summary: 'Issue development token (dev only)' })
   @ApiEnvelopeCreatedResponse('Development token issued')
   createDevToken(@Body() dto: LoginDevDto) {
-    return this.authService.issueDevToken(dto);
+    return this.authService.issueDevToken(dto).then((result) =>
+      serializeDto(DevTokenResponseDto, result),
+    );
   }
 
   @Public()
@@ -57,7 +67,7 @@ export class AuthController {
       userAgent: req.header('user-agent') || undefined,
     });
     this.setRefreshCookie(res, result.refreshToken);
-    return this.withoutRefreshToken(result);
+    return serializeDto(AuthLoginResponseDto, this.withoutRefreshToken(result));
   }
 
   @Public()
@@ -77,7 +87,7 @@ export class AuthController {
       userAgent: req.header('user-agent') || undefined,
     });
     this.setRefreshCookie(res, result.refreshToken);
-    return this.withoutRefreshToken(result);
+    return serializeDto(AuthRefreshResponseDto, this.withoutRefreshToken(result));
   }
 
   @Public()
@@ -94,7 +104,7 @@ export class AuthController {
     const refreshToken = this.resolveRefreshToken(req, dto.refreshToken);
     const result = await this.authService.logout(refreshToken);
     this.clearRefreshCookie(res);
-    return result;
+    return serializeDto(LogoutResponseDto, result);
   }
 
   @Get('me')
@@ -105,10 +115,10 @@ export class AuthController {
   @ApiEnvelopeOkResponse('Authenticated user claims')
   getMe(@Req() req: AuthenticatedRequest) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return {
+    return serializeDto(AuthMeResponseDto, {
       userId,
       claims: req.user?.claims ?? {},
-    };
+    });
   }
 
   private resolveRefreshToken(

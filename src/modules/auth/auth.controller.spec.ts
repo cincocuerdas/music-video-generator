@@ -43,7 +43,7 @@ describe('AuthController', () => {
 
     const result = await controller.createDevToken(dto);
 
-    expect(result).toBe(expected);
+    expect(result).toEqual(expected);
     expect(authService.issueDevToken).toHaveBeenCalledWith(dto);
   });
 

@@ -20,6 +20,7 @@ import {
   ApiEnvelopeDefaultErrorResponses,
   ApiEnvelopeOkResponse,
 } from '../../common/swagger/api-envelope.decorators';
+import { serializeDto } from '../../common/utils/serialize-dto.util';
 import { ProjectsService } from './projects.service';
 import {
   AuthenticatedRequest,
@@ -31,6 +32,20 @@ import {
   StartGenerationDto,
   CreateFeedbackDto,
   SendLiveSignalDto,
+  FeedbackActionResponseDto,
+  FeedbackStatsResponseDto,
+  LiveSignalActionResponseDto,
+  LiveSignalDataResponseDto,
+  ProjectActionResponseDto,
+  ProjectDetailResponseDto,
+  ProjectDownloadResponseDto,
+  ProjectFeedbackResponseDto,
+  ProjectListResponseDto,
+  ProjectResponseDto,
+  ProjectStartGenerationResponseDto,
+  ProjectStatusResponseDto,
+  ProjectVideoResponseDto,
+  PromptOptimizationResponseDto,
 } from './dto';
 
 @Controller('projects')
@@ -52,7 +67,9 @@ export class ProjectsController {
     @Body() createProjectDto: CreateProjectDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.create(userId, createProjectDto);
+    return this.projectsService.create(userId, createProjectDto).then((project) =>
+      serializeDto(ProjectResponseDto, project),
+    );
   }
 
   @Get()
@@ -64,7 +81,9 @@ export class ProjectsController {
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.findAll(userId, page, limit);
+    return this.projectsService.findAll(userId, page, limit).then((projects) =>
+      serializeDto(ProjectListResponseDto, projects),
+    );
   }
 
   @Get(':id')
@@ -75,7 +94,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.findOne(id, userId);
+    return this.projectsService.findOne(id, userId).then((project) =>
+      serializeDto(ProjectDetailResponseDto, project),
+    );
   }
 
   @Patch(':id')
@@ -87,7 +108,9 @@ export class ProjectsController {
     @Body() updateProjectDto: UpdateProjectDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.update(id, userId, updateProjectDto);
+    return this.projectsService.update(id, userId, updateProjectDto).then((project) =>
+      serializeDto(ProjectResponseDto, project),
+    );
   }
 
   @Delete(':id')
@@ -98,7 +121,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.remove(id, userId);
+    return this.projectsService.remove(id, userId).then((project) =>
+      serializeDto(ProjectResponseDto, project),
+    );
   }
 
   @Post(':id/generate')
@@ -111,7 +136,9 @@ export class ProjectsController {
     @Body() dto: StartGenerationDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.startGeneration(id, userId, dto);
+    return this.projectsService.startGeneration(id, userId, dto).then((result) =>
+      serializeDto(ProjectStartGenerationResponseDto, result),
+    );
   }
 
   @Get(':id/status')
@@ -122,7 +149,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.getStatus(id, userId);
+    return this.projectsService.getStatus(id, userId).then((status) =>
+      serializeDto(ProjectStatusResponseDto, status),
+    );
   }
 
   @Post(':id/cancel')
@@ -134,7 +163,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.cancelGeneration(id, userId);
+    return this.projectsService.cancelGeneration(id, userId).then((result) =>
+      serializeDto(ProjectActionResponseDto, result),
+    );
   }
 
   @Get(':id/video')
@@ -145,7 +176,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.getVideo(id, userId);
+    return this.projectsService.getVideo(id, userId).then((video) =>
+      serializeDto(ProjectVideoResponseDto, video),
+    );
   }
 
   @Get(':id/download')
@@ -156,7 +189,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.getDownloadUrl(id, userId);
+    return this.projectsService.getDownloadUrl(id, userId).then((download) =>
+      serializeDto(ProjectDownloadResponseDto, download),
+    );
   }
 
   @Post(':id/feedback')
@@ -169,7 +204,9 @@ export class ProjectsController {
     @Body() dto: CreateFeedbackDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.addFeedback(id, userId, dto);
+    return this.projectsService.addFeedback(id, userId, dto).then((result) =>
+      serializeDto(FeedbackActionResponseDto, result),
+    );
   }
 
   @Get(':id/feedback')
@@ -180,7 +217,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.getFeedback(id, userId);
+    return this.projectsService.getFeedback(id, userId).then((feedback) =>
+      serializeDto(ProjectFeedbackResponseDto, feedback),
+    );
   }
 
   @Get('feedback/stats')
@@ -188,7 +227,9 @@ export class ProjectsController {
   @ApiOperation({ summary: 'Get aggregated feedback statistics by style' })
   @ApiEnvelopeOkResponse('Feedback statistics')
   getFeedbackStats(@Query('style') style?: string) {
-    return this.projectsService.getFeedbackStats(style);
+    return this.projectsService.getFeedbackStats(style).then((stats) =>
+      serializeDto(FeedbackStatsResponseDto, stats),
+    );
   }
 
   @Get(':id/prompt-optimization')
@@ -201,7 +242,9 @@ export class ProjectsController {
     @Query('prompt') prompt?: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.getPromptOptimization(id, userId, prompt);
+    return this.projectsService.getPromptOptimization(id, userId, prompt).then((result) =>
+      serializeDto(PromptOptimizationResponseDto, result),
+    );
   }
 
   @Post(':id/live-signal')
@@ -214,7 +257,9 @@ export class ProjectsController {
     @Body() signal: SendLiveSignalDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.saveLiveSignal(id, userId, signal);
+    return this.projectsService.saveLiveSignal(id, userId, signal).then((result) =>
+      serializeDto(LiveSignalActionResponseDto, result),
+    );
   }
 
   @Get(':id/live-signal')
@@ -225,7 +270,9 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.getLiveSignal(id, userId);
+    return this.projectsService.getLiveSignal(id, userId).then((result) =>
+      result ? serializeDto(LiveSignalDataResponseDto, result) : null,
+    );
   }
 
   @Delete(':id/live-signal')
@@ -236,6 +283,8 @@ export class ProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.projectsService.clearLiveSignal(id, userId);
+    return this.projectsService.clearLiveSignal(id, userId).then((result) =>
+      serializeDto(ProjectActionResponseDto, result),
+    );
   }
 }

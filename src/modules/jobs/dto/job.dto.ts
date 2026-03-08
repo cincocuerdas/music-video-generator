@@ -1,3 +1,4 @@
+import { Expose, Type } from 'class-transformer';
 import { IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
 
 // Must match Prisma schema enums
@@ -55,33 +56,149 @@ export class UpdateJobDto {
 }
 
 export class JobResponseDto {
+  @Expose()
   id: string;
+
+  @Expose()
   projectId: string;
-  jobType: JobType;
+
+  @Expose()
+  type: JobType;
+
+  @Expose()
   status: JobStatus;
+
+  @Expose()
   progress: number;
+
+  @Expose()
   currentStep: string | null;
+
+  @Expose()
   inputData: Record<string, any> | null;
+
+  @Expose()
   outputData: Record<string, any> | null;
+
+  @Expose()
   errorMessage: string | null;
-  queuedAt: Date;
-  startedAt: Date | null;
-  completedAt: Date | null;
+
+  @Expose()
+  @Type(() => Date)
+  createdAt: Date;
+
+  @Expose()
+  @Type(() => Date)
+  updatedAt: Date;
+
+  @Expose()
   workerId: string | null;
 }
 
 export class JobListResponseDto {
+  @Expose()
+  @Type(() => JobResponseDto)
   data: JobResponseDto[];
+
+  @Expose()
   total: number;
 }
 
+export class PipelineStatusStageDto {
+  @Expose()
+  type: JobType;
+
+  @Expose()
+  status: JobStatus;
+
+  @Expose()
+  progress: number | null;
+
+  @Expose()
+  currentStep?: string | null;
+
+  @Expose()
+  errorMessage?: string | null;
+}
+
 export class PipelineStatusDto {
+  @Expose()
   projectId: string;
+
+  @Expose()
+  projectStatus: string;
+
+  @Expose()
+  pipelineStatus: string;
+
+  @Expose()
+  degraded: boolean;
+
+  @Expose()
+  degradedReasons: string[];
+
+  @Expose()
+  degradedReasonCodes: string[];
+
+  @Expose()
   overallProgress: number;
-  currentStage: JobType | null;
-  stages: {
-    type: JobType;
-    status: JobStatus;
-    progress: number;
-  }[];
+
+  @Expose()
+  currentJob: JobType | null;
+
+  @Expose()
+  @Type(() => PipelineStatusStageDto)
+  jobs: PipelineStatusStageDto[];
+}
+
+export class DeadLetterItemResponseDto {
+  @Expose()
+  deadLetterId: string;
+
+  @Expose()
+  status: string;
+
+  @Expose()
+  name: string;
+
+  @Expose()
+  attemptsMade: number;
+
+  @Expose()
+  failedReason: string | null;
+
+  @Expose()
+  timestamp: number;
+
+  @Expose()
+  data: Record<string, unknown>;
+}
+
+export class DeadLetterListResponseDto {
+  @Expose()
+  total: number;
+
+  @Expose()
+  @Type(() => DeadLetterItemResponseDto)
+  items: DeadLetterItemResponseDto[];
+}
+
+export class DeadLetterReplayResponseDto {
+  @Expose()
+  replayed: boolean;
+
+  @Expose()
+  reason?: string;
+
+  @Expose()
+  deadLetterId?: string;
+
+  @Expose()
+  jobId?: string;
+
+  @Expose()
+  projectId?: string;
+
+  @Expose()
+  type?: string;
 }

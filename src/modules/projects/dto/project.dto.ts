@@ -1,4 +1,8 @@
 import {
+  Expose,
+  Type,
+} from 'class-transformer';
+import {
   IsArray,
   IsEnum,
   IsInt,
@@ -150,3 +154,373 @@ export class SendLiveSignalDto {
   reason?: string;
 }
 
+export class ProjectListItemResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  title!: string;
+
+  @Expose()
+  status!: string;
+
+  @Expose()
+  thumbnailUrl!: string | null;
+
+  @Expose()
+  videoUrl!: string | null;
+
+  @Expose()
+  visualStyle!: string | null;
+
+  @Expose()
+  @Type(() => Date)
+  createdAt!: Date;
+}
+
+export class ProjectListResponseDto {
+  @Expose()
+  @Type(() => ProjectListItemResponseDto)
+  data!: ProjectListItemResponseDto[];
+
+  @Expose()
+  total!: number;
+
+  @Expose()
+  page!: number;
+
+  @Expose()
+  limit!: number;
+}
+
+export class ProjectJobSummaryResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  type!: string;
+
+  @Expose()
+  status!: string;
+
+  @Expose()
+  progress!: number;
+
+  @Expose()
+  currentStep!: string | null;
+
+  @Expose()
+  errorMessage!: string | null;
+
+  @Expose()
+  outputData!: Record<string, unknown> | null;
+
+  @Expose()
+  @Type(() => Date)
+  createdAt!: Date;
+
+  @Expose()
+  @Type(() => Date)
+  updatedAt!: Date;
+}
+
+export class ProjectResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  title!: string;
+
+  @Expose()
+  status!: string;
+
+  @Expose()
+  sourceMode!: string | null;
+
+  @Expose()
+  lyrics!: string | null;
+
+  @Expose()
+  audioUrl!: string | null;
+
+  @Expose()
+  audioDuration!: number | null;
+
+  @Expose()
+  visualStyle!: string | null;
+
+  @Expose()
+  colorPalette!: string[];
+
+  @Expose()
+  aspectRatio!: string;
+
+  @Expose()
+  analysisResult!: Record<string, unknown> | null;
+
+  @Expose()
+  videoUrl!: string | null;
+
+  @Expose()
+  thumbnailUrl!: string | null;
+
+  @Expose()
+  @Type(() => Date)
+  createdAt!: Date;
+
+  @Expose()
+  @Type(() => Date)
+  updatedAt!: Date;
+
+  @Expose()
+  youtubeUrl!: string | null;
+}
+
+export class ProjectDetailResponseDto extends ProjectResponseDto {
+  @Expose()
+  @Type(() => ProjectJobSummaryResponseDto)
+  jobs!: ProjectJobSummaryResponseDto[];
+
+  @Expose()
+  pipelineStatus!: string;
+
+  @Expose()
+  degraded!: boolean;
+
+  @Expose()
+  degradedReasons!: string[];
+
+  @Expose()
+  degradedReasonCodes!: string[];
+}
+
+export class ProjectStartJobResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  type!: string;
+
+  @Expose()
+  status!: string;
+}
+
+export class ProjectStartGenerationResponseDto {
+  @Expose()
+  projectId!: string;
+
+  @Expose()
+  message!: string;
+
+  @Expose()
+  totalJobs!: number;
+
+  @Expose()
+  @Type(() => ProjectStartJobResponseDto)
+  jobs!: ProjectStartJobResponseDto[];
+}
+
+export class ProjectStatusJobResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  type!: string;
+
+  @Expose()
+  status!: string;
+
+  @Expose()
+  progress!: number;
+
+  @Expose()
+  currentStep!: string | null;
+
+  @Expose()
+  errorMessage!: string | null;
+}
+
+export class ProjectStatusResponseDto {
+  @Expose()
+  projectId!: string;
+
+  @Expose()
+  status!: string;
+
+  @Expose()
+  pipelineStatus!: string;
+
+  @Expose()
+  degraded!: boolean;
+
+  @Expose()
+  degradedReasons!: string[];
+
+  @Expose()
+  degradedReasonCodes!: string[];
+
+  @Expose()
+  overallProgress!: number;
+
+  @Expose()
+  @Type(() => ProjectStatusJobResponseDto)
+  jobs!: ProjectStatusJobResponseDto[];
+}
+
+export class ProjectActionResponseDto {
+  @Expose()
+  success!: boolean;
+
+  @Expose()
+  message!: string;
+
+  @Expose()
+  projectId?: string;
+}
+
+export class ProjectVideoResponseDto {
+  @Expose()
+  projectId!: string;
+
+  @Expose()
+  status!: string;
+
+  @Expose()
+  pipelineStatus!: string;
+
+  @Expose()
+  degraded!: boolean;
+
+  @Expose()
+  degradedReasons!: string[];
+
+  @Expose()
+  degradedReasonCodes!: string[];
+
+  @Expose()
+  videoUrl!: string | null;
+
+  @Expose()
+  thumbnailUrl!: string | null;
+}
+
+export class ProjectDownloadResponseDto {
+  @Expose()
+  projectId!: string;
+
+  @Expose()
+  downloadUrl!: string;
+
+  @Expose()
+  expiresAt!: string | null;
+}
+
+export class FeedbackActionResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  message!: string;
+}
+
+export class FeedbackEntryResponseDto {
+  @Expose()
+  id!: string;
+
+  @Expose()
+  projectId!: string;
+
+  @Expose()
+  score!: number;
+
+  @Expose()
+  frameTime!: number | null;
+
+  @Expose()
+  prompt!: string;
+
+  @Expose()
+  style!: string | null;
+
+  @Expose()
+  @Type(() => Date)
+  createdAt!: Date;
+}
+
+export class ProjectFeedbackResponseDto {
+  @Expose()
+  projectId!: string;
+
+  @Expose()
+  total!: number;
+
+  @Expose()
+  likes!: number;
+
+  @Expose()
+  dislikes!: number;
+
+  @Expose()
+  @Type(() => FeedbackEntryResponseDto)
+  feedbacks!: FeedbackEntryResponseDto[];
+}
+
+export class FeedbackStatsResponseDto {
+  @Expose()
+  style!: string;
+
+  @Expose()
+  totalLikes!: number;
+
+  @Expose()
+  totalDislikes!: number;
+
+  @Expose()
+  successRate!: number;
+
+  @Expose()
+  topSuccessfulKeywords!: string[];
+}
+
+export class PromptOptimizationResponseDto {
+  @Expose()
+  qualityBoost!: string;
+
+  @Expose()
+  negativeBoost!: string;
+
+  @Expose()
+  confidence!: number;
+}
+
+export class LiveSignalDataResponseDto {
+  @Expose()
+  type!: 'boost' | 'correct';
+
+  @Expose()
+  sceneIndex!: number;
+
+  @Expose()
+  timestamp!: number;
+
+  @Expose()
+  intensity!: number;
+
+  @Expose()
+  reason!: string | undefined;
+
+  @Expose()
+  processed!: boolean;
+}
+
+export class LiveSignalActionResponseDto {
+  @Expose()
+  success!: boolean;
+
+  @Expose()
+  message!: string;
+
+  @Expose()
+  @Type(() => LiveSignalDataResponseDto)
+  signal?: LiveSignalDataResponseDto;
+}

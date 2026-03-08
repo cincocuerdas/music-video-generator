@@ -20,9 +20,20 @@ import {
   ApiEnvelopeDefaultErrorResponses,
   ApiEnvelopeOkResponse,
 } from '../../common/swagger/api-envelope.decorators';
+import {
+  serializeDto,
+  serializeDtoArray,
+} from '../../common/utils/serialize-dto.util';
 import { JobsService } from './jobs.service';
 import { DeadLetterOrchestratorService } from './services/dead-letter-orchestrator.service';
-import { CreateJobDto, UpdateJobDto } from './dto';
+import {
+  CreateJobDto,
+  DeadLetterListResponseDto,
+  DeadLetterReplayResponseDto,
+  JobResponseDto,
+  PipelineStatusDto,
+  UpdateJobDto,
+} from './dto';
 import {
   AuthenticatedRequest,
   AuthService,
@@ -48,7 +59,9 @@ export class JobsController {
     @Body() createJobDto: CreateJobDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.createForUser(userId, createJobDto);
+    return this.jobsService.createForUser(userId, createJobDto).then((job) =>
+      serializeDto(JobResponseDto, job),
+    );
   }
 
   @Get('dead-letter')
@@ -60,7 +73,9 @@ export class JobsController {
     @Query('limit', new DefaultValuePipe(25), ParseIntPipe) limit: number,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.deadLetterOrchestrator.listForUser(userId, limit);
+    return this.deadLetterOrchestrator.listForUser(userId, limit).then((result) =>
+      serializeDto(DeadLetterListResponseDto, result),
+    );
   }
 
   @Post('dead-letter/:id/replay')
@@ -72,7 +87,9 @@ export class JobsController {
     @Param('id') id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.deadLetterOrchestrator.replayForUser(id, userId);
+    return this.deadLetterOrchestrator.replayForUser(id, userId).then((result) =>
+      serializeDto(DeadLetterReplayResponseDto, result),
+    );
   }
 
   @Get(':id')
@@ -83,7 +100,9 @@ export class JobsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.findOneForUser(id, userId);
+    return this.jobsService.findOneForUser(id, userId).then((job) =>
+      serializeDto(JobResponseDto, job),
+    );
   }
 
   @Patch(':id')
@@ -96,7 +115,9 @@ export class JobsController {
     @Body() updateJobDto: UpdateJobDto,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.updateForUser(id, userId, updateJobDto);
+    return this.jobsService.updateForUser(id, userId, updateJobDto).then((job) =>
+      serializeDto(JobResponseDto, job),
+    );
   }
 
   @Delete(':id')
@@ -108,7 +129,9 @@ export class JobsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.removeForUser(id, userId);
+    return this.jobsService.removeForUser(id, userId).then((job) =>
+      serializeDto(JobResponseDto, job),
+    );
   }
 
   @Post('pipeline/:id/start')
@@ -120,7 +143,9 @@ export class JobsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.startPipelineForUser(id, userId);
+    return this.jobsService.startPipelineForUser(id, userId).then((jobs) =>
+      serializeDtoArray(JobResponseDto, jobs),
+    );
   }
 
   @Get('pipeline/:id')
@@ -131,7 +156,9 @@ export class JobsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const userId = this.authService.getUserIdFromRequest(req);
-    return this.jobsService.getPipelineStatusForUser(id, userId);
+    return this.jobsService.getPipelineStatusForUser(id, userId).then((result) =>
+      serializeDto(PipelineStatusDto, result),
+    );
   }
 
   @Post('pipeline/:id/cancel')

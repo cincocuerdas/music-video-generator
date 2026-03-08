@@ -1,27 +1,56 @@
 run_id,scene_index,timestamp_range,verse_type,verse_text,provider,model,quality_score,exposed,user_feedback,failure_tags,passed_visual_review,reason,notes
-run_001,3,,NARRATIVE,"Two friends laughing on a rooftop looking at the city",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Two-person composition held up; expressions and faces remained coherent","multi_person baseline"
-run_001,4,,NARRATIVE,"The crowd pushes forward at the concert gates",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Crowd scene remained coherent without obvious background-face collapse","crowd baseline"
-run_001,5,,LITERAL,"Hands reaching for the sky as the bass drops",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Hands were usable and the frame avoided severe finger deformation","hands baseline"
-run_002,0,,NARRATIVE,"A soldier stands alone in the desert sand",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,environment_incoherence","no","Usable soldier image but weak film-noir adherence; reads as generic war portrait","style drift"
-run_002,1,,NARRATIVE,"Dust swirls around boots cracked by the sun",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output","no","Scene should focus on boots, but human portrait contamination dominated the frame","boots unresolved in P2"
-run_002,2,,NARRATIVE,"Three children run through a marketplace selling fruit",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Children anatomy and motion were credible","good multi-person action"
-run_002,3,,NARRATIVE,"An old man with a long beard reads ancient scrolls",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent","no","Scene was usable but not visually aligned with film noir","style drift"
-run_002,4,,NARRATIVE,"Explosions light up the horizon at dusk",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output","no","Foreground human hijacked an effects/environment scene","major mismatch"
-run_002,5,,NARRATIVE,"A couple dances slowly under string lights in a garden",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Two-person composition and hand placement were acceptable","couple baseline"
-run_002,6,,NARRATIVE,"Rain pours down on a busy Tokyo intersection",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Busy crowd and rain held together well","crowd + environment"
-run_002,7,,NARRATIVE,"A lone wolf howls at the moon from a cliff edge",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output","no","Generated a human-like subject instead of a wolf","animal mismatch"
-run_003,0,,NARRATIVE,"Dust swirls around cracked military boots baking in the desert sun",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent","no","Boots improved slightly but a human still dominated the image","targeted rerun partial miss"
-run_003,1,,NARRATIVE,"Explosions light up the horizon at dusk while smoke fills the sky",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Now reads as environment/effects scene with no foreground human","fixed in P3"
-run_003,2,,NARRATIVE,"A lone wolf howls at the full moon from a jagged cliff edge",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Wolf subject is correct and clearly non-human","fixed in P3"
-run_003,3,,NARRATIVE,"The crowd surges past neon signs and graffiti banners at the concert gates",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Crowd and signage both read well; text was surprisingly legible","text + crowd pass"
-run_003,4,,LITERAL,"A thousand hands reaching for the sky as the bass drops hard",gemini,gemini-3-pro-image-preview,0.70,true,,"quality_gate_missed_bad_output","yes","Visual result was usable, but the score was incorrectly penalized","false positive score"
-run_004,0,,NARRATIVE,"Dust swirls around cracked military boots on wet asphalt, low angle shot focusing on the boots",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Frame is knee-down and boots clearly dominate the image","human_detail fix worked"
-run_004,1,,LITERAL,"A thousand hands reaching for the sky, fingers spread wide, palms open to the rain",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Hands are primary subject and score calibration is now correct","hands fix worked"
-run_004,2,,NARRATIVE,"Massive explosions light up the horizon at dusk, shockwaves ripple across the desert sand",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","No human foreground; effects/environment dominance preserved","effect_scene stable"
-run_004,3,,NARRATIVE,"A lone wolf howls from a jagged cliff under a blood-red moon",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Wolf remains the correct primary subject","animal_subject stable"
-run_005,0,,INTROSPECTIVE,"Two lovers hold each other close, foreheads touching, eyes shut, tears rolling down their cheeks",gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_under_specified,quality_gate_missed_bad_output","no","Image was anatomically fine but framing was too wide and tears were not sufficiently readable","emotional close-up gap"
-run_005,1,,NARRATIVE,"Children sprint barefoot across a muddy schoolyard, jumping over puddles, arms flailing wildly",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Children anatomy and movement read naturally","stress test pass"
-run_005,2,,NARRATIVE,"The crowd surges forward holding protest signs that read FREEDOM and NO MORE LIES, graffiti banners on the walls behind them",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Sign text is readable and crowd remains coherent","text_render success"
-run_005,3,,LITERAL,"A group of friends laugh with mouths wide open and sing together at a karaoke bar, teeth visible, microphones in hand",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Mouths, teeth, and microphones remain usable with no obvious fusion artifacts","mouth stress pass"
-run_005,4,,NARRATIVE,"A packed stadium concert, thousands of faces stretching into the distance, stage lights cutting through haze, shallow depth of field on the nearest row",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Foreground faces remain coherent and distant crowd does not show obvious cloning","stadium crowd pass"
-run_006,0,,INTROSPECTIVE,"Two lovers hold each other close, foreheads touching, eyes shut, tears rolling down their cheeks",gemini,gemini-3-pro-image-preview,0.82,true,,,"yes","Tight close-up, both faces visible, tears readable, no facial fusion","targeted fix closed the case"
+run_001,0,,LITERAL,neon streets midnight,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
+run_001,1,,LITERAL,rain on broken glass,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
+run_001,2,,LITERAL,woman red dress streetlight,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
+run_001,3,,NARRATIVE,two friends rooftop,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Two-person composition held up; expressions and faces remained coherent,multi_person baseline
+run_001,4,,NARRATIVE,crowd at concert gates,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Crowd scene remained coherent without obvious background-face collapse,crowd baseline
+run_001,5,,LITERAL,hands reaching sky,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Hands were usable and the frame avoided severe finger deformation,hands baseline
+run_001,6,,LITERAL,man alone dark room phone,gemini,gemini-3-pro-image-preview,0.82,true,,,,,
+run_001,7,,NARRATIVE,fireworks over river,gemini,gemini-3-pro-image-preview,0.82,true,,,,,good candidate
+run_002,0,,NARRATIVE,soldier alone desert,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,environment_incoherence",no,Usable soldier image but weak film-noir adherence; reads as generic war portrait,style drift
+run_002,1,,NARRATIVE,boots cracked by sun,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output",no,"Scene should focus on boots, but human portrait contamination dominated the frame",boots unresolved in P2
+run_002,2,,NARRATIVE,children marketplace,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Children anatomy and motion were credible,good multi-person action
+run_002,3,,NARRATIVE,old man reads scrolls,gemini,gemini-3-pro-image-preview,0.82,true,,prompt_conflicting_intent,no,Scene was usable but not visually aligned with film noir,style drift
+run_002,4,,NARRATIVE,explosions horizon dusk,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output",no,Foreground human hijacked an effects/environment scene,major mismatch
+run_002,5,,NARRATIVE,couple dances garden,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Two-person composition and hand placement were acceptable,couple baseline
+run_002,6,,NARRATIVE,rain Tokyo intersection,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Busy crowd and rain held together well,crowd + environment
+run_002,7,,NARRATIVE,lone wolf howls cliff,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_conflicting_intent,quality_gate_missed_bad_output",no,Generated a human-like subject instead of a wolf,animal mismatch
+run_003,0,,NARRATIVE,boots military,gemini,gemini-3-pro-image-preview,0.82,true,,prompt_conflicting_intent,no,Boots improved slightly but a human still dominated the image,targeted rerun partial miss
+run_003,1,,NARRATIVE,explosions horizon,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Now reads as environment/effects scene with no foreground human,fixed in P3
+run_003,2,,NARRATIVE,wolf jagged cliff,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Wolf subject is correct and clearly non-human,fixed in P3
+run_003,3,,NARRATIVE,crowd neon signs graffiti,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Crowd and signage both read well; text was surprisingly legible,text + crowd pass
+run_003,4,,LITERAL,hands reaching sky,gemini,gemini-3-pro-image-preview,0.70,true,,quality_gate_missed_bad_output,yes,"Visual result was usable, but the score was incorrectly penalized",false positive score
+run_004,0,,NARRATIVE,boots wet asphalt,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Frame is knee-down and boots clearly dominate the image,human_detail fix worked
+run_004,1,,LITERAL,hands reaching sky,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Hands are primary subject and score calibration is now correct,hands fix worked
+run_004,2,,NARRATIVE,explosions horizon,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,No human foreground; effects/environment dominance preserved,effect_scene stable
+run_004,3,,NARRATIVE,wolf blood-red moon,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Wolf remains the correct primary subject,animal_subject stable
+run_005,0,,INTROSPECTIVE,couple close-up tears,gemini,gemini-3-pro-image-preview,0.82,true,,"prompt_under_specified,quality_gate_missed_bad_output",no,Image was anatomically fine but framing was too wide and tears were not sufficiently readable,emotional close-up gap
+run_005,1,,NARRATIVE,children running muddy,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Children anatomy and movement read naturally,stress test pass
+run_005,2,,NARRATIVE,protest signs FREEDOM,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Sign text is readable and crowd remains coherent,text_render success
+run_005,3,,LITERAL,laughing group karaoke,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Mouths, teeth, and microphones remain usable with no obvious fusion artifacts",mouth stress pass
+run_005,4,,NARRATIVE,stadium thousands faces,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,Foreground faces remain coherent and distant crowd does not show obvious cloning,stadium crowd pass
+run_006,0,,INTROSPECTIVE,couple embrace tears close-up,gemini,gemini-3-pro-image-preview,0.82,true,,,yes,"Tight close-up, both faces visible, tears readable, no facial fusion",targeted fix closed the case
+run_007,0,,NARRATIVE,protest march fists raised,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: crowd coherence, fists"
+run_007,1,,LITERAL,fans stadium gates scarves,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: face degradation in crowd
+run_007,2,,NARRATIVE,wedding dance floor bride,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: bride distinct, crowd natural"
+run_007,3,,LITERAL,fire jugglers crowd barriers,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: fire + crowd separation
+run_007,4,,NARRATIVE,graduation caps gowns,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: rows of students coherent
+run_008,0,,NARRATIVE,hacker holographic terminal,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: neon, rain, tech detail"
+run_008,1,,LITERAL,android crowded subway,gemini,gemini-3-pro-image-preview,0.82,true,,,,,verify: android distinct from humans
+run_008,2,,NARRATIVE,drone swarms mega-city,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: drone pattern, skyline"
+run_008,3,,NARRATIVE,bounty hunters rooftop,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,,,"**FALSE POSITIVE**: ""smoke"" triggered effect_scene, but scene has 2 people. ""hunters"" missing from people keywords."
+run_008,4,,LITERAL,ramen vendor holographic ads,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: holo ads, stall detail"
+run_009,0,,NARRATIVE,dragon crumbling tower fire,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,,,"**FALSE POSITIVE**: ""fire"" triggered effect_scene, but dragon should be animal_subject. ""dragon"" missing from animal_keywords."
+run_009,1,,LITERAL,elven archer moonlit forest,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: archer pose, bow, forest"
+run_009,2,,NARRATIVE,stone golem vines earth,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: golem anatomy, environment"
+run_009,3,,LITERAL,wizard hands lightning books,gemini,gemini-3-pro-image-preview,0.70,true,,routing_missed_trait,,,"**FALSE POSITIVE**: ""lightning"" triggered effect_scene. Wizard's hands scene — ""wizard"" not in people keywords, portrait_hint blocked human_detail."
+run_009,4,,LITERAL,fairy village hollow tree,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: miniature detail, lanterns"
+run_010,0,,LITERAL,old woman window tears,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: wrinkles, tear detail"
+run_010,1,,LITERAL,boxer locker room bruised,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: bruises, swollen eye"
+run_010,2,,LITERAL,mother newborn tiny fingers,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: baby anatomy, hand detail"
+run_010,3,,NARRATIVE,soldier reads letter tear,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: letter legible, firelight"
+run_010,4,,LITERAL,child aquarium glass fish,gemini,gemini-3-pro-image-preview,0.82,true,,,,,"verify: reflection, fish detail"
+run_011,0,,,bounty hunters + smoke rooftop,gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=portrait_human; previous=effect_scene Q=0.70 (P8-sc3)
+run_011,1,,,dragon + fire on tower,gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=animal_subject; previous=effect_scene Q=0.70 (P9-sc0)
+run_011,2,,,wizard + lightning in library,gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=portrait_human; previous=effect_scene Q=0.70 (P9-sc3)
+run_011,3,,,hands on railing (control),gemini,gemini-3-pro-image-preview,0.82,true,,,,,archetype=human_detail; previous=human_detail Q=0.82 (no change)

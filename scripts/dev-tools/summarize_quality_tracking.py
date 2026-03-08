@@ -125,8 +125,9 @@ def main() -> None:
         provider = (row.get("provider") or "unknown").strip() or "unknown"
         model = (row.get("model") or "unknown").strip() or "unknown"
         verse_type = (row.get("verse_type") or "unknown").strip() or "unknown"
-        model_totals[model]["reviewed"] += 1
-        model_totals[model]["avg_quality"] += parse_float(row.get("quality_score", ""))
+        if passed_visual_review is not None:
+            model_totals[model]["reviewed"] += 1
+            model_totals[model]["avg_quality"] += parse_float(row.get("quality_score", ""))
         if passed_visual_review is True:
             model_totals[model]["passed"] += 1
         elif passed_visual_review is False:
@@ -175,7 +176,8 @@ def main() -> None:
     print("quality_tracking_summary")
     print(f"runs={total_runs}")
     print(f"scenes={total_scenes}")
-    print(f"reviewed_scenes={len(scenes)}")
+    reviewed_scene_total = passed_scene_count + failed_scene_count
+    print(f"reviewed_scenes={reviewed_scene_total}")
     print(f"passed_visual_review={passed_scene_count}")
     print(f"failed_visual_review={failed_scene_count}")
     print(f"degraded_rate={degraded_rate:.2%}")

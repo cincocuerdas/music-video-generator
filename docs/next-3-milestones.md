@@ -26,6 +26,8 @@ That means:
 
 ## Milestone 1: Product Validation
 
+Operational runbook: `docs/product-validation-runbook.md`
+
 ### Goal
 
 Validate that the current pipeline is usable in real conditions, not only in audit runs and synthetic stress cases.
@@ -232,3 +234,4 @@ Examples:
 1. use `docs/video-provider-architecture.md`
 2. scope `ltx_cloud` phase 1 as a feature-flagged provider
 3. keep it disabled by default until cost guardrails exist
+

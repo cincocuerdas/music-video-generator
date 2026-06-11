@@ -25,6 +25,20 @@ from gemini_semaphore import (
     GEMINI_COOLDOWN,
     is_gemini_rate_limit_error_generic,
 )
+
+def _validate_url_for_subprocess(url: str) -> str:
+    """Validate URL is a safe http/https URL before passing to subprocess."""
+    url = url.strip()
+    if not url:
+        return url
+    parsed = urllib.request.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"URL must use http or https scheme, got: {parsed.scheme!r}")
+    if not parsed.netloc:
+        raise ValueError("URL must have a valid host")
+    if any(c in url for c in ('\x00', '\n', '\r', '`', '$', '|', ';', '&')):
+        raise ValueError("URL contains unsafe characters")
+    return url
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -306,6 +320,7 @@ def maybe_generate_source_context(
     youtube_url = str(project.get("youtubeUrl") or "").strip()
     if not project_id or not youtube_url:
         return ""
+    youtube_url = _validate_url_for_subprocess(youtube_url)
     if not os.path.exists(SUMMARIZE_SOURCE_SCRIPT_PATH):
         print("Warning: summarize_source.js not found; skipping source context.", file=sys.stderr)
         return ""

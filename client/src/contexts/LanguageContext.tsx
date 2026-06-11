@@ -43,12 +43,17 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, [language]);
 
     const t = useMemo(() => {
+        const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
         return (path: string): string => {
             if (!dictionary) return path;
             const keys = path.split('.');
             let result: unknown = dictionary;
 
             for (const key of keys) {
+                if (UNSAFE_KEYS.has(key)) {
+                    return path;
+                }
                 if (result && typeof result === 'object' && key in result) {
                     result = (result as Record<string, unknown>)[key];
                 } else {

@@ -13,6 +13,26 @@ import subprocess
 import sys
 import time
 import queue
+
+def _validate_style_name(name: str) -> str:
+    """Validate style name is safe for use in file paths and subprocess args."""
+    name = name.strip()
+    if not name:
+        raise ValueError("Style name cannot be empty")
+    if len(name) > 100:
+        raise ValueError("Style name too long (max 100 chars)")
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise ValueError(f"Style name contains invalid characters: {name!r}. Only alphanumeric, underscore, and hyphen allowed.")
+    return name
+
+def _validate_path_arg(path_val: str, label: str) -> str:
+    """Validate a path argument doesn't contain traversal sequences."""
+    path_val = path_val.strip()
+    if '\x00' in path_val:
+        raise ValueError(f"{label} contains null bytes")
+    if '..' in path_val.split(os.sep):
+        raise ValueError(f"{label} contains path traversal")
+    return path_val
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -255,10 +275,13 @@ def run_kohya_training(
     epochs: int,
     deadline_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
+    style_name = _validate_style_name(style_name)
+    dataset_root = _validate_path_arg(dataset_root, "dataset_root")
     lora_output_dir = os.path.join(root_dir, "ComfyUI", "models", "loras")
     os.makedirs(lora_output_dir, exist_ok=True)
 
     kohya_dir = os.getenv("KOHYA_SCRIPTS_DIR", os.path.join(root_dir, "kohya_ss", "sd-scripts"))
+    kohya_dir = _validate_path_arg(kohya_dir, "kohya_dir")
     train_script = os.path.join(kohya_dir, "sdxl_train_network.py")
     if not os.path.exists(train_script):
         raise Exception(
@@ -273,6 +296,7 @@ def run_kohya_training(
         or os.getenv("SDXL_BASE_MODEL")
         or default_model
     )
+    pretrained_model = _validate_path_arg(pretrained_model, "pretrained_model")
 
     output_name = f"style_{style_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     python_exec = sys.executable or os.getenv("PYTHON_PATH", "python")

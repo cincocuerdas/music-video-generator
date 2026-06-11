@@ -1,9 +1,17 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, BadRequestException } from '@nestjs/common';
 import { RedisClientService } from '../../redis';
 import { EventsGateway } from '../../events/events.gateway';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import Redis from 'ioredis';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertValidProjectId(projectId: string): void {
+  if (!projectId || !UUID_REGEX.test(projectId)) {
+    throw new BadRequestException('Invalid project ID format');
+  }
+}
 
 @Injectable()
 export class LiveSteeringService implements OnModuleDestroy {
@@ -38,6 +46,7 @@ export class LiveSteeringService implements OnModuleDestroy {
   }
 
   private async getLiveSignalPath(projectId: string): Promise<string> {
+    assertValidProjectId(projectId);
     const signalsDir = this.getSignalsDir();
     await fs.mkdir(signalsDir, { recursive: true });
     return path.join(signalsDir, `${projectId}.json`);
@@ -47,6 +56,7 @@ export class LiveSteeringService implements OnModuleDestroy {
     projectId: string,
     signal: { type: 'boost' | 'correct'; sceneIndex: number; timestamp?: number; intensity?: number; reason?: string },
   ) {
+    assertValidProjectId(projectId);
     const filePath = await this.getLiveSignalPath(projectId);
 
     const signalData = {
@@ -92,6 +102,7 @@ export class LiveSteeringService implements OnModuleDestroy {
   }
 
   async getLiveSignal(projectId: string) {
+    assertValidProjectId(projectId);
     const filePath = path.join(this.getSignalsDir(), `${projectId}.json`);
 
     try {
@@ -108,6 +119,7 @@ export class LiveSteeringService implements OnModuleDestroy {
   }
 
   async clearLiveSignal(projectId: string) {
+    assertValidProjectId(projectId);
     const filePath = path.join(this.getSignalsDir(), `${projectId}.json`);
 
     // 1. Clear file

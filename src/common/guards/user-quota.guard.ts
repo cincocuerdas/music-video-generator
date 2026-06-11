@@ -26,30 +26,18 @@ export class UserQuotaGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
-    if (!resource) {
-      return true;
-    }
-
-    if (context.getType<'http'>() !== 'http') {
-      return true;
-    }
+    if (!resource) return true;
+    if (context.getType<'http'>() !== 'http') return true;
 
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const userId = request.user?.userId;
+    if (!userId) return true;
 
-    if (!userId) {
-      return true;
-    }
+    const result = await this.quotaService.checkAndIncrement(userId, resource);
 
-    const result = await this.quotaService.checkQuota(userId, resource);
-
-    if (!result.allowed) {
-      this.logger.warn(
-        `Quota exceeded: user=${userId} resource=${resource} current=${result.current} limit=${result.limit}`,
-      );
-      throw new ForbiddenException(
-        `Daily ${resource} quota exceeded (${result.current}/${result.limit}). Resets at ${result.resetsAt}.`,
-      );
+    if (!result.ok) {
+      this.logger.warn(`Quota denied: user=${userId} resource=${resource} reason=${result.reason}`);
+      throw new ForbiddenException(result.reason);
     }
 
     return true;

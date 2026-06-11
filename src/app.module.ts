@@ -11,10 +11,11 @@ import { RedisModule, RedisThrottlerStorageService } from './modules/redis';
 import { HealthModule } from './modules/health';
 import { ProjectsModule } from './modules/projects';
 import { JobsModule } from './modules/jobs';
-import { PythonRunnerModule } from './common/services';
+import { PythonRunnerModule, UserQuotaService } from './common/services';
 import { EventsModule } from './modules/events';
 import { AuthModule, JwtAuthGuard } from './modules/auth';
 import { HttpThrottlerGuard } from './common/guards/http-throttler.guard';
+import { UserQuotaGuard } from './common/guards/user-quota.guard';
 import { ObservabilityModule } from './modules/observability';
 import { AllExceptionsFilter } from './common/filters';
 import { WebhooksModule } from './modules/webhooks';
@@ -70,6 +71,11 @@ const parseEnvNumber = (value: string | undefined, fallback: number): number => 
       provide: APP_GUARD,
       useClass: HttpThrottlerGuard,
     },
+    {
+      provide: APP_GUARD,
+      useClass: UserQuotaGuard,
+    },
+    UserQuotaService,
     AllExceptionsFilter,
   ],
 })

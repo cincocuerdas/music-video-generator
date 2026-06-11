@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { THROTTLE_RULES } from '../../common/constants';
+import { RequireQuota } from '../../common/decorators/require-quota.decorator';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   ApiEnvelopeCreatedResponse,
@@ -60,6 +61,7 @@ export class ProjectsController {
 
   @Post()
   @Throttle(THROTTLE_RULES.projectsCreate)
+  @RequireQuota('projects')
   @ApiOperation({ summary: 'Create a project' })
   @ApiEnvelopeCreatedResponse('Project created')
   create(
@@ -128,6 +130,7 @@ export class ProjectsController {
 
   @Post(':id/generate')
   @Throttle(THROTTLE_RULES.projectsGenerate)
+  @RequireQuota('generations')
   @ApiOperation({ summary: 'Start generation pipeline for a project' })
   @ApiEnvelopeCreatedResponse('Generation pipeline started')
   startGeneration(

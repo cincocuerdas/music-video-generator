@@ -79,7 +79,7 @@
     "@nestjs/platform-express": "^10.4.1",
     "@nestjs/platform-socket.io": "^10.4.22",
     "@nestjs/serve-static": "^4.0.2",
-    "@nestjs/swagger": "^7.4.2",
+    "@nestjs/swagger": "^11.2.6",
     "@nestjs/throttler": "^6.3.0",
     "@nestjs/websockets": "^10.4.22",
     "@prisma/client": "^5.19.0",

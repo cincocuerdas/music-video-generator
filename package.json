@@ -81,7 +81,7 @@
     "@nestjs/serve-static": "^4.0.2",
     "@nestjs/swagger": "^7.4.2",
     "@nestjs/throttler": "^6.3.0",
-    "@nestjs/websockets": "^10.4.22",
+    "@nestjs/websockets": "^11.1.15",
     "@prisma/client": "^5.19.0",
     "@sentry/node": "^9.0.0",
     "axios": "^1.13.2",
